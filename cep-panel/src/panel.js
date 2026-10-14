@@ -38,6 +38,11 @@
     // State
     // ---------------------------------------------------------------------------
     var csInterface = new CSInterface();
+    // Papel desta instância: o SERVIÇO invisível roda o servidor; o PAINEL visível é monitor/vigia
+    // (e só assume o servidor se o serviço não voltar). Antes o servidor vivia no painel e caía junto.
+    var SERVICE_ID = "com.premierpro.mcp.bridge.service";
+    var EXT_ID = ""; try { EXT_ID = csInterface.getExtensionID(); } catch (eId) { EXT_ID = ""; }
+    var IS_SERVICE = EXT_ID === SERVICE_ID;
     var wss = null;
     var activeConnections = new Set();
     var heartbeatTimer = null;
@@ -47,7 +52,37 @@
 
     // Lazy-loading state for the full premiere.jsx ExtendScript library
     var premiereJsxLoaded = false;
-    var premiereJsxPath = path.join(__dirname, "host", "premiere.jsx").replace(/\\/g, "/");
+    // Pasta da extensão pelo caminho oficial do CEP. __dirname NÃO aponta para a extensão no
+    // Premiere 26.5 (era a causa do "EvalScript error": premiere.jsx nunca era encontrado).
+    var EXT_ROOT = (function () {
+        var p = "";
+        try { p = csInterface.getSystemPath(SystemPath.EXTENSION) || ""; } catch (e) { p = ""; }
+        p = String(p).replace(/^file:\/\//, "");
+        try { p = decodeURIComponent(p); } catch (e) { /* mantém */ }
+        if (!p) p = path.join(__dirname, "..");
+        return p.replace(/\\/g, "/").replace(/\/$/, "");
+    })();
+    var HOST_DIR = EXT_ROOT + "/src/host";
+    var premiereJsxPath = HOST_DIR + "/premiere.jsx";
+
+    // premiere.jsx is shipped split into parts (see scripts/build.js): load them in order,
+    // collecting any per-part error (file + line) into the global __mcpLoadErr.
+    function premiereLoadScript() {
+        var partsDir = HOST_DIR + "/premiere_parts";
+        var files = [];
+        try {
+            files = fs.readdirSync(partsDir).filter(function (f) { return /^p\d+\.jsx$/.test(f); }).sort();
+        } catch (e) { files = []; }
+        if (!files.length) {
+            return 'var __mcpLoadErr = ""; try { $.evalFile("' + premiereJsxPath + '"); } catch(e) { __mcpLoadErr = "premiere.jsx: " + e + " (linha " + e.line + ")"; }';
+        }
+        var s = 'var __mcpLoadErr = ""; ';
+        files.forEach(function (f) {
+            var full = path.join(partsDir, f).replace(/\\/g, "/");
+            s += 'try { $.evalFile("' + full + '"); } catch(e) { __mcpLoadErr += "' + f + ': " + e + " (linha " + e.line + "); "; } ';
+        });
+        return s;
+    }
 
     // Stats tracking
     var stats = {
@@ -245,7 +280,7 @@
     // ---------------------------------------------------------------------------
     function loadPort() {
         // Check for port override via environment or config file
-        var configPath = path.join(__dirname, "..", "config.json");
+        var configPath = EXT_ROOT + "/config.json";
         try {
             if (fs.existsSync(configPath)) {
                 var config = JSON.parse(fs.readFileSync(configPath, "utf8"));
@@ -300,18 +335,29 @@
             // Build lazy-load prefix: if the function doesn't exist yet,
             // load the full premiere.jsx (once) to make it and mcpDispatch
             // available.
-            var loadScript = "";
-            if (!premiereJsxLoaded) {
-                loadScript =
-                    'if (typeof mcpDispatch !== "function" || typeof ' + fn + ' !== "function") { ' +
-                    '  try { $.evalFile("' + premiereJsxPath + '"); } catch(loadErr) {} ' +
-                    '} ';
+            // Sempre confere no próprio ExtendScript (o motor pode perder o estado ao trocar de projeto
+            // enquanto o painel continua vivo); recarrega as partes só se faltar a função.
+            // hostReload: recarrega as partes NO NÍVEL GLOBAL (aqui no evalScript do painel).
+            // Chamado de dentro de uma função ExtendScript, $.evalFile define as funções só no escopo local
+            // e o código antigo continua valendo — era o bug do "hostReload lê cache".
+            if (fn === "hostReload") {
+                return premiereLoadScript() +
+                    ' (typeof mcpDispatch === "function") ? ' +
+                    '("{\\"success\\":true,\\"data\\":{\\"reloaded\\":true,\\"via\\":\\"panel-global\\",\\"errors\\":\\"" + String(__mcpLoadErr || "nenhum").replace(/["\\\\]/g, "\'") + "\\"}}") : ' +
+                    '("{\\"success\\":false,\\"error\\":\\"premiere.jsx nao carregou: " + String(__mcpLoadErr).replace(/["\\\\]/g, "\'") + "\\"}")';
             }
+            var loadScript =
+                'if (typeof mcpDispatch !== "function" || typeof ' + fn + ' !== "function") { ' +
+                premiereLoadScript() + ' } ';
 
             var callScript = "mcpDispatch(" + escapeForEval(fn) + "," +
                 escapeForEval(argsJson || "{}") + ")";
 
-            return loadScript + callScript;
+            // If loading failed, return the real ExtendScript error instead of a bare "EvalScript error."
+            return loadScript +
+                '(typeof mcpDispatch !== "function") ? ' +
+                '("{\\"success\\":false,\\"error\\":\\"premiere.jsx nao carregou: " + String(typeof __mcpLoadErr === "undefined" ? "?" : __mcpLoadErr).replace(/["\\\\]/g, "\'") + "\\"}") : ' +
+                callScript;
         },
     };
 
@@ -685,7 +731,7 @@
     // Load ExtendScript host functions
     // ---------------------------------------------------------------------------
     function loadHostScript() {
-        var corePath = path.join(__dirname, "host", "core.jsx").replace(/\\/g, "/");
+        var corePath = HOST_DIR + "/core.jsx";
         log("Loading core ExtendScript: " + corePath);
         csInterface.evalScript('$.evalFile("' + corePath + '")', function (result) {
             if (result === "EvalScript error.") {
@@ -696,12 +742,12 @@
                 // If it fails (too large for $.evalFile), functions will be
                 // lazy-loaded on the first evalCommand call instead.
                 log("Loading extended functions from premiere.jsx...");
-                csInterface.evalScript('$.evalFile("' + premiereJsxPath + '")', function (result2) {
-                    if (result2 === "EvalScript error.") {
-                        log("Extended functions will be loaded on first use (lazy)", "info");
-                    } else {
+                csInterface.evalScript(premiereLoadScript() + ' (typeof mcpDispatch === "function") ? "OK" : ("ERRO: " + __mcpLoadErr)', function (result2) {
+                    if (result2 === "OK") {
                         premiereJsxLoaded = true;
                         log("All ExtendScript functions loaded", "success");
+                    } else {
+                        log("premiere.jsx load problem: " + result2 + " (will retry on first use)", "error");
                     }
                 });
             }
@@ -712,10 +758,10 @@
     loadHostScript();
 
     // Listen for panel close event
+    // Painel escondido (aba atrás de outra, workspace trocado) NÃO desliga mais o servidor:
+    // era a causa dos "Disconnected" aleatórios. O servidor só para quando o processo termina.
     csInterface.addEventListener("com.adobe.csxs.events.WindowVisibilityChanged", function (event) {
-        if (event.data === "false") {
-            shutdown();
-        }
+        if (event.data === "false") log("Painel escondido — a ponte continua ativa", "info");
     });
 
     // Also handle process exit in Node.js context
@@ -756,7 +802,59 @@
             log("Host application: " + hostEnv.appName, "info");
         }
 
-        startServer();
+        if (IS_SERVICE) {
+            log("Modo SERVIÇO (invisível): servidor da ponte", "info");
+            startServer();
+        } else {
+            log("Modo PAINEL: monitorando o serviço da ponte", "info");
+            startWatchdog();
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Vigia (só no painel visível): confere a porta a cada 5 s. Sem resposta por 30 s → reinicia o
+    // serviço (encerra o processo travado e pede ao Premiere para reabrir). Sem resposta por 60 s →
+    // o próprio painel assume o servidor, para a ponte nunca ficar fora.
+    // ---------------------------------------------------------------------------
+    function probePort(port, cb) {
+        var done = false, sock;
+        try { sock = require("net").createConnection({ port: port, host: "127.0.0.1" }); } catch (e) { cb(false); return; }
+        var fim = function (ok) { if (done) return; done = true; try { sock.destroy(); } catch (e) {} cb(ok); };
+        sock.setTimeout(2000, function () { fim(false); });
+        sock.on("connect", function () { fim(true); });
+        sock.on("error", function () { fim(false); });
+    }
+    function restartService() {
+        try {
+            var cp = require("child_process");
+            var out = cp.execSync("pgrep -fl CEPHtmlEngine || true").toString();
+            out.split("\n").forEach(function (l) {
+                if (l.indexOf(" " + SERVICE_ID + " ") >= 0 && l.indexOf("Helper") < 0) {
+                    var pid = parseInt(l.trim().split(/\s+/)[0], 10);
+                    if (pid) { try { process.kill(pid, "SIGTERM"); log("Serviço travado encerrado (pid " + pid + ")", "info"); } catch (e) {} }
+                }
+            });
+        } catch (e) { log("restartService: " + e.message, "error"); }
+        setTimeout(function () {
+            try { csInterface.requestOpenExtension(SERVICE_ID, ""); log("Pedido ao Premiere para reabrir o serviço", "info"); } catch (e) { log("requestOpenExtension: " + e.message, "error"); }
+        }, 2500);
+    }
+    function startWatchdog() {
+        var port = loadPort(), falhas = 0;
+        statusDot.className = "status-dot connecting"; statusLabel.textContent = "Procurando o serviço...";
+        setInterval(function () {
+            probePort(port, function (ok) {
+                if (ok) {
+                    if (falhas) log("Ponte respondendo na porta " + port, "success");
+                    falhas = 0; statusDot.className = "status-dot connected";
+                    statusLabel.textContent = wss ? "Servidor no painel (porta " + port + ")" : "Serviço ativo (porta " + port + ")";
+                    return;
+                }
+                falhas++; statusDot.className = "status-dot connecting"; statusLabel.textContent = "Sem resposta há " + (falhas * 5) + " s";
+                if (falhas === 6) { log("Serviço sem resposta há 30 s — reiniciando o serviço", "error"); restartService(); }
+                if (falhas === 12 && !wss) { log("Serviço não voltou — o painel assume o servidor", "error"); startServer(); }
+            });
+        }, 5000);
     }
 
     // Start when DOM is ready (it should already be, but be safe)

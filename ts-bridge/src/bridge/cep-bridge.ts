@@ -17,6 +17,7 @@ import WebSocket from "ws";
 import { createLogger, format, transports, type Logger } from "winston";
 
 import { resolveSharedToken } from "../auth/token.js";
+import { recoverCepPanel } from "./cep-panel-recovery.js";
 import {
   resolveExportPresetPath,
   type BridgeConfig,
@@ -176,9 +177,10 @@ export class CepBridge implements PremiereBridge {
           ws.terminate();
           this.log.warn(
             `Connection to CEP panel at ${this.wsEndpoint} timed out. ` +
-              "Bridge will operate in disconnected mode.",
+              "Bridge will keep retrying in the background.",
           );
           resolve();
+          if (!this.intentionalClose) this.scheduleReconnect();
         }
       }, this.commandTimeoutMs);
 
@@ -234,9 +236,12 @@ export class CepBridge implements PremiereBridge {
           clearTimeout(connectionTimeout);
           this.log.warn(
             `Could not connect to CEP panel: ${err.message}. ` +
-              "Bridge will operate in disconnected mode.",
+              "Bridge will keep retrying in the background.",
           );
           resolve();
+          // Antes só reconectava se já tivesse conectado uma vez: se a ponte subisse antes do
+          // painel abrir, ficava desconectada para sempre.
+          if (!this.intentionalClose) this.scheduleReconnect();
         } else {
           this.log.error(`WebSocket error: ${err.message}`);
         }
@@ -559,10 +564,16 @@ export class CepBridge implements PremiereBridge {
    * Each command gets a unique requestId. The promise resolves when the
    * CEP panel sends back a message with a matching requestId.
    */
-  private send<T = unknown>(
+  private async send<T = unknown>(
     action: string,
     params: Record<string, unknown>,
   ): Promise<T> {
+    // Conexão sob demanda: se o painel abriu depois da ponte (ou reiniciou), conecta agora
+    // em vez de falhar com "WebSocket is not open".
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.cancelReconnect();
+      await this.connect();
+    }
     return new Promise<T>((resolve, reject) => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
         reject(
@@ -658,6 +669,7 @@ export class CepBridge implements PremiereBridge {
    */
   private scheduleReconnect(): void {
     if (this.intentionalClose) return;
+    if (this.reconnectTimer) return; // já existe uma tentativa agendada
 
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       this.log.error(
@@ -669,6 +681,13 @@ export class CepBridge implements PremiereBridge {
     }
 
     this.reconnectAttempts++;
+    // Duas falhas seguidas com o Premiere aberto = painel provavelmente travado (tela preta).
+    // Reinicia só o processo do painel; limitado a 1x/min dentro de recoverCepPanel.
+    if (this.reconnectAttempts === 2) {
+      void recoverCepPanel(parseInt(this.wsEndpoint.split(":").pop() ?? "9801", 10)).then((r) => {
+        if (r.attempted) this.log.warn(`Recuperação do painel CEP: ${r.reason}`);
+      });
+    }
     const delay = this.getReconnectDelay();
     this.log.info(
       `Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`,

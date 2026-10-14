@@ -56,6 +56,45 @@ fs.mkdirSync(output, { recursive: true });
     fs.copyFileSync(path.join(root, relativePath), path.join(output, relativePath));
 });
 
+// Premiere 26.5+ fails $.evalFile on the 1.4 MB premiere.jsx as a single file.
+// Split it at top-level function boundaries into ~120 KB parts; panel.js loads
+// them in order (src/host/premiere_parts/pNN.jsx) and reports any load error.
+(function splitPremiereJsx() {
+    var hostDir = path.join(output, "src", "host");
+    var source = fs.readFileSync(path.join(hostDir, "premiere.jsx"), "utf8");
+    var lines = source.split("\n");
+    var partsDir = path.join(hostDir, "premiere_parts");
+    fs.mkdirSync(partsDir, { recursive: true });
+    var parts = [], current = [], size = 0, LIMIT = 120 * 1024;
+    lines.forEach(function (line) {
+        if (size >= LIMIT && /^function [A-Za-z_$]/.test(line)) {
+            parts.push(current.join("\n")); current = []; size = 0;
+        }
+        current.push(line); size += line.length + 1;
+    });
+    if (current.length) parts.push(current.join("\n"));
+    parts.forEach(function (text, i) {
+        fs.writeFileSync(path.join(partsDir, "p" + (i < 10 ? "0" : "") + i + ".jsx"), text);
+    });
+    // premiere.jsx itself becomes a tiny loader for the parts, so even an already-running
+    // (older) panel that evalFile()s premiere.jsx picks up every function. Top-level code
+    // (not wrapped in a function) so the parts are evaluated into the global scope.
+    var loader = [
+        "// Gerado por scripts/build.js — carrega premiere_parts/pNN.jsx (o arquivo inteiro de 1.4 MB",
+        "// falha no $.evalFile do Premiere 26.5+). Erros por parte ficam em $.global.__mcpLoadErr.",
+        "var __mcpBase = (new File($.fileName)).parent.fsName + '/premiere_parts/';",
+        "var __mcpLoadErr = '';",
+    ];
+    parts.forEach(function (_, i) {
+        var n = "p" + (i < 10 ? "0" : "") + i + ".jsx";
+        loader.push("try { $.evalFile(__mcpBase + '" + n + "'); } catch (e) { __mcpLoadErr += '" + n + ": ' + e + ' (linha ' + e.line + '); '; }");
+    });
+    // Diagnóstico: grava o resultado do carregamento em ~/.premierpro-mcp/jsx-load.log
+    loader.push("try { var __f = new File(Folder('~').fsName + '/.premierpro-mcp/jsx-load.log'); __f.open('w'); __f.write((new Date()).toString() + ' | mcpDispatch=' + (typeof mcpDispatch) + ' | erros: ' + (__mcpLoadErr || 'nenhum')); __f.close(); } catch (e2) {}");
+    fs.writeFileSync(path.join(hostDir, "premiere.jsx"), loader.join("\n") + "\n");
+    console.log("Split premiere.jsx into " + parts.length + " parts (premiere.jsx = loader)");
+})();
+
 // CEP's .debug file opens a local Chrome DevTools endpoint. Keep it out of
 // production builds and packages; developers must opt in with --dev.
 if (developmentMode) {

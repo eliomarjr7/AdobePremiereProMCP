@@ -21,8 +21,46 @@ function _ok(data) {
     return JSON.stringify({ success: true, data: data });
 }
 
+// ---------------------------------------------------------------------------
+// Tempo: 254016000000 ticks/s. Quadro em 23,976 (24000/1001) = 10594584000 ticks.
+// Atenção: o valor 10.584.000 é 1000x menor e errado (fez um Extract cortar 0,04 s no início em vez de 2:18).
+var _TPS = 254016000000, _FT23976 = 10594584000;
+function _f2t(f) { return String(Math.round(f) * _FT23976); }
+function _t2f(ticks) { return Math.round(parseFloat(ticks) / _FT23976); }
+function _tcNDF24(f) { var p2 = function (n) { return (n < 10 ? "0" : "") + n; }, s_ = Math.floor(f / 24); return p2(Math.floor(s_ / 3600)) + ":" + p2(Math.floor(s_ / 60) % 60) + ":" + p2(s_ % 60) + ":" + p2(f % 24); }
+
 function _err(message) {
     return JSON.stringify({ success: false, error: String(message) });
+}
+
+// ---------------------------------------------------------------------------
+// QE conta os ESPAÇOS VAZIOS da trilha como itens (o DOM não). Usar getItemAt(clipIndex)
+// com o índice do DOM pega o vão errado sempre que a trilha não começa em 0 ou tem buracos.
+// Este helper devolve o item QE do N-ésimo clipe real (pula itens "Empty").
+// ---------------------------------------------------------------------------
+// Resolve o nome do efeito no idioma do Premiere (ex.: "Lumetri Color" -> "Cor de Lumetri").
+// getVideoEffectByName devolve um objeto inválido (não nulo) para nomes de outro idioma.
+var _FX_ALIAS = { "lumetri color": "umetri", "gaussian blur": "gaussian", "cross dissolve": "dissolv" };
+function _qeVideoEffect(effectName) {
+    var nm = String(effectName || ""); var lista = qe.project.getVideoEffectList(); var low = nm.toLowerCase();
+    for (var i = 0; i < lista.length; i++) if (String(lista[i]).toLowerCase() === low) return qe.project.getVideoEffectByName(String(lista[i]));
+    var termo = _FX_ALIAS[low] || low;
+    for (var j = 0; j < lista.length; j++) if (String(lista[j]).toLowerCase().indexOf(termo) >= 0) return qe.project.getVideoEffectByName(String(lista[j]));
+    return null;
+}
+
+function _qeClipItem(qeTrack, clipIndex) {
+    if (!qeTrack) return null;
+    clipIndex = parseInt(clipIndex, 10) || 0;
+    var n = qeTrack.numItems, k = -1;
+    for (var i = 0; i < n; i++) {
+        var it = qeTrack.getItemAt(i);
+        if (!it) continue;
+        if (String(it.type).toLowerCase() === "empty") continue;
+        k++;
+        if (k === clipIndex) return it;
+    }
+    return null;
 }
 
 /**
@@ -1002,7 +1040,7 @@ function addTransition(trackIndex, clipIndex, transitionName, duration) {
             if (qeSeq) {
                 var qeTrack = qeSeq.getVideoTrackAt(trackIndex);
                 if (qeTrack) {
-                    var qeClip = qeTrack.getItemAt(clipIndex);
+                    var qeClip = _qeClipItem(qeTrack, clipIndex);
                     if (qeClip) {
                         qeClip.addTransition(
                             qe.project.getVideoTransitionByName(transitionName || "Cross Dissolve"),
@@ -1276,7 +1314,7 @@ function applyAudioEffect(trackIndex, clipIndex, effectName) {
         var resolvedClipIndex = parseInt(clipIndex, 10) || 0;
         var qt = qs.getAudioTrackAt(resolvedTrackIndex);
         if (!qt) return _err("QE: audio track " + resolvedTrackIndex + " not found");
-        var qc = qt.getItemAt(resolvedClipIndex);
+        var qc = _qeClipItem(qt, resolvedClipIndex);
         if (!qc) return _err("QE: clip " + resolvedClipIndex + " not found on audio track " + resolvedTrackIndex);
         var ef = qe.project.getAudioEffectByName(effectName);
         if (!ef) return _err("Audio effect not found: " + effectName);
@@ -3896,7 +3934,7 @@ function setClipSpeed(trackType, trackIndex, clipIndex, speed, ripple) {
                 var tIdx = parseInt(trackIndex, 10) || 0;
                 var cIdx = parseInt(clipIndex, 10) || 0;
                 var qeTrack = (trackType === "audio") ? qeSeq.getAudioTrackAt(tIdx) : qeSeq.getVideoTrackAt(tIdx);
-                if (qeTrack) { var qeClip = qeTrack.getItemAt(cIdx); if (qeClip && qeClip.setSpeed) qeClip.setSpeed(speed * 100, doRipple, false); }
+                if (qeTrack) { var qeClip = _qeClipItem(qeTrack, cIdx); if (qeClip && qeClip.setSpeed) qeClip.setSpeed(speed * 100, doRipple, false); }
             }
         } else {
             var curDur = _timeToSeconds(clip.duration);
@@ -3924,7 +3962,7 @@ function reverseClip(trackType, trackIndex, clipIndex) {
                 var tIdx = parseInt(trackIndex, 10) || 0;
                 var cIdx = parseInt(clipIndex, 10) || 0;
                 var qeTrack = (trackType === "audio") ? qeSeq.getAudioTrackAt(tIdx) : qeSeq.getVideoTrackAt(tIdx);
-                if (qeTrack) { var qeClip = qeTrack.getItemAt(cIdx); if (qeClip && qeClip.setSpeed) qeClip.setSpeed(-100, false, true); }
+                if (qeTrack) { var qeClip = _qeClipItem(qeTrack, cIdx); if (qeClip && qeClip.setSpeed) qeClip.setSpeed(-100, false, true); }
             }
         }
         return _ok({ action: "reverse", clipName: clip.name || "", trackType: trackType, trackIndex: parseInt(trackIndex, 10) || 0, clipIndex: parseInt(clipIndex, 10) || 0 });
@@ -3988,7 +4026,7 @@ function getClipSpeed(trackType, trackIndex, clipIndex) {
                 var tIdx = parseInt(trackIndex, 10) || 0;
                 var cIdx = parseInt(clipIndex, 10) || 0;
                 var qeTrack = (trackType === "audio") ? qeSeq.getAudioTrackAt(tIdx) : qeSeq.getVideoTrackAt(tIdx);
-                if (qeTrack) { var qeClip = qeTrack.getItemAt(cIdx); if (qeClip && qeClip.getSpeed) { var rs = qeClip.getSpeed(); speed = Math.abs(parseFloat(rs)) / 100; reversed = parseFloat(rs) < 0; } }
+                if (qeTrack) { var qeClip = _qeClipItem(qeTrack, cIdx); if (qeClip && qeClip.getSpeed) { var rs = qeClip.getSpeed(); speed = Math.abs(parseFloat(rs)) / 100; reversed = parseFloat(rs) < 0; } }
             }
         }
         return _ok({ clipName: clip.name || "", speed: speed, reversed: reversed, trackType: trackType, trackIndex: parseInt(trackIndex, 10) || 0, clipIndex: parseInt(clipIndex, 10) || 0 });
@@ -4392,7 +4430,8 @@ function saveProject() {
             return _err("No project is open");
         }
         var saveResult = app.project.save();
-        if (saveResult !== 0) return _err("Project save failed with status " + saveResult);
+        // Premiere 26.5 devolve true no sucesso (versões antigas devolviam 0)
+        if (saveResult !== 0 && saveResult !== true) return _err("Project save failed with status " + saveResult);
         return _ok({
             saved: true,
             projectName: app.project.name || "",
@@ -4443,7 +4482,7 @@ function closeProject(saveFirst) {
 
         if (saveFirst === true || saveFirst === "true") {
             var closeSaveResult = app.project.save();
-            if (closeSaveResult !== 0) return _err("Project save before close failed with status " + closeSaveResult);
+            if (closeSaveResult !== 0 && closeSaveResult !== true) return _err("Project save before close failed with status " + closeSaveResult);
         }
 
         app.project.closeDocument();
@@ -4598,6 +4637,12 @@ function importFiles(paramsJson) {
 
         var beforeChildCount = targetBin.children ? targetBin.children.numItems : 0;
         var beforeMediaPaths = mediaPathCounts(targetBin);
+        // XML/AAF/EDL/projeto importam SEQUÊNCIAS, não um item com o caminho do arquivo:
+        // conferir pelo aumento no número de sequências (antes dava falso "readback did not find").
+        var PROJECT_FILE_RE = /\.(xml|fcpxml|aaf|edl|prproj)$/i;
+        var beforeSeqCount = app.project.sequences ? app.project.sequences.numSequences : 0;
+        var projectFileCount = 0;
+        for (var pf = 0; pf < filePaths.length; pf++) if (PROJECT_FILE_RE.test(String(filePaths[pf]))) projectFileCount++;
         var suppressUI = true;
         var importAsNumberedStill = false;
         var success = app.project.importFiles(filePaths, suppressUI, targetBin, importAsNumberedStill);
@@ -4607,13 +4652,18 @@ function importFiles(paramsJson) {
         var afterMediaPaths = mediaPathCounts(targetBin);
         for (var verifyIndex = 0; verifyIndex < requestedCanonicalPaths.length; verifyIndex++) {
             var verifyPath = requestedCanonicalPaths[verifyIndex];
+            if (PROJECT_FILE_RE.test(String(filePaths[verifyIndex]))) continue;
             var requestedOccurrences = pathOccurrenceCount(requestedCanonicalPaths.slice(0, verifyIndex + 1), verifyPath);
             var addedOccurrences = pathOccurrenceCount(afterMediaPaths, verifyPath) - pathOccurrenceCount(beforeMediaPaths, verifyPath);
             if (addedOccurrences < requestedOccurrences) {
                 return _err("Import readback did not find a new project item for: " + filePaths[verifyIndex]);
             }
         }
-        if (afterChildCount < beforeChildCount + filePaths.length) {
+        if (projectFileCount > 0) {
+            var afterSeqCount = app.project.sequences ? app.project.sequences.numSequences : 0;
+            if (afterSeqCount <= beforeSeqCount) return _err("Import de XML/projeto não criou sequência nova");
+        }
+        if (afterChildCount < beforeChildCount + (filePaths.length - projectFileCount)) {
             return _err("Import count mismatch: expected at least " + filePaths.length + " new items, got " + (afterChildCount - beforeChildCount));
         }
 
@@ -5425,7 +5475,7 @@ function addVideoTransition(trackIndex, clipIndex, transitionName, duration, app
         if (!qeSeq) return _err("QE: no active sequence");
         var qeTrack = qeSeq.getVideoTrackAt(trackIndex);
         if (!qeTrack) return _err("QE: video track " + trackIndex + " not found");
-        var qeClip = qeTrack.getItemAt(clipIndex);
+        var qeClip = _qeClipItem(qeTrack, clipIndex);
         if (!qeClip) return _err("QE: clip " + clipIndex + " not found on video track " + trackIndex);
         var tr = qe.project.getVideoTransitionByName(transitionName);
         if (!tr) return _err("QE: video transition '" + transitionName + "' not found");
@@ -5457,7 +5507,7 @@ function addAudioTransition(trackIndex, clipIndex, transitionName, duration) {
         if (!qeSeq) return _err("QE: no active sequence");
         var qeTrack = qeSeq.getAudioTrackAt(trackIndex);
         if (!qeTrack) return _err("QE: audio track " + trackIndex + " not found");
-        var qeClip = qeTrack.getItemAt(clipIndex);
+        var qeClip = _qeClipItem(qeTrack, clipIndex);
         if (!qeClip) return _err("QE: clip " + clipIndex + " not found on audio track " + trackIndex);
         var tr = qe.project.getAudioTransitionByName(transitionName);
         if (!tr) return _err("QE: audio transition '" + transitionName + "' not found");
@@ -5560,7 +5610,7 @@ function applyDefaultTransition(trackType, trackIndex, clipIndex) {
         if (!qeSeq) return _err("QE: no active sequence");
         var qeTrack = (trackType === "audio") ? qeSeq.getAudioTrackAt(trackIndex) : qeSeq.getVideoTrackAt(trackIndex);
         if (!qeTrack) return _err("QE: track " + trackIndex + " not found");
-        var qeClip = qeTrack.getItemAt(clipIndex);
+        var qeClip = _qeClipItem(qeTrack, clipIndex);
         if (!qeClip) return _err("QE: clip " + clipIndex + " not found");
         qeClip.addTransition(null, true, "1.0");
         return _ok({ trackType: trackType || "video", trackIndex: trackIndex, clipIndex: clipIndex, appliedDefault: true });
@@ -5602,9 +5652,9 @@ function applyVideoEffect(trackIndex, clipIndex, effectName) {
         if (!qeSeq) return _err("QE: no active sequence");
         var qeTrack = qeSeq.getVideoTrackAt(trackIndex);
         if (!qeTrack) return _err("QE: video track " + trackIndex + " not found");
-        var qeClip = qeTrack.getItemAt(clipIndex);
+        var qeClip = _qeClipItem(qeTrack, clipIndex);
         if (!qeClip) return _err("QE: clip " + clipIndex + " not found on video track " + trackIndex);
-        var fx = qe.project.getVideoEffectByName(effectName);
+        var fx = _qeVideoEffect(effectName);
         if (!fx) return _err("QE: video effect '" + effectName + "' not found");
         qeClip.addVideoEffect(fx);
         var afterCount = domClip.components ? domClip.components.numItems : 0;
@@ -6168,7 +6218,7 @@ function _setLumetriProperty(trackIndex, clipIndex, propertyName, value) {
     if (!lumetri) {
         app.enableQE();
         var qeSeq = qe.project.getActiveSequence();
-        if (qeSeq) { var qeTrack = qeSeq.getVideoTrackAt(trackIndex); if (qeTrack) { var qeClip = qeTrack.getItemAt(clipIndex); if (qeClip) { var fx = qe.project.getVideoEffectByName("Lumetri Color"); if (fx) qeClip.addVideoEffect(fx); } } }
+        if (qeSeq) { var qeTrack = qeSeq.getVideoTrackAt(trackIndex); if (qeTrack) { var qeClip = _qeClipItem(qeTrack, clipIndex); if (qeClip) { var fx = _qeVideoEffect("Lumetri Color"); if (fx) qeClip.addVideoEffect(fx); } } }
         if (clip.components) { for (var ci2 = 0; ci2 < clip.components.numItems; ci2++) { var comp2 = clip.components[ci2]; if (comp2.displayName === "Lumetri Color" || comp2.matchName === "AE.ADBE Lumetri") { lumetri = comp2; break; } } }
     }
     if (!lumetri) return _err("Could not find or apply Lumetri Color effect");
@@ -6219,9 +6269,9 @@ function _getLumetriComponent(trackIndex, clipIndex) {
         if (qeSeq) {
             var qeTrack = qeSeq.getVideoTrackAt(trackIndex);
             if (qeTrack) {
-                var qeClip = qeTrack.getItemAt(clipIndex);
+                var qeClip = _qeClipItem(qeTrack, clipIndex);
                 if (qeClip) {
-                    var fx = qe.project.getVideoEffectByName("Lumetri Color");
+                    var fx = _qeVideoEffect("Lumetri Color");
                     if (fx) qeClip.addVideoEffect(fx);
                 }
             }
@@ -7191,7 +7241,7 @@ function getMulticamAngles(trackIndex, clipIndex) {
         if (qeSeq) {
             var qeTrack = qeSeq.getVideoTrackAt(trackIndex);
             if (qeTrack) {
-                var qeClip = qeTrack.getItemAt(clipIndex);
+                var qeClip = _qeClipItem(qeTrack, clipIndex);
                 if (qeClip && qeClip.numMulticamAngles !== undefined) {
                     for (var a = 0; a < qeClip.numMulticamAngles; a++) {
                         angles.push({
@@ -7415,7 +7465,7 @@ function attachProxy(projectItemIndex, proxyPath) {
         // attachProxy(mediaPath, isHiRes): 0 assigns proxy media. Adobe's
         // documented success status is 0.
         var status = item.attachProxy(proxyFile.path, 0);
-        if (status !== 0) return _err("attachProxy failed with status " + status);
+        if (status !== 0 && status !== true) return _err("attachProxy failed with status " + status);
 
         var after = _mcpReadProxyState(item);
         if (after.error) return _err(after.error);
@@ -7549,7 +7599,7 @@ function detachProxy(projectItemIndex) {
         }
 
         var status = item.detachProxy();
-        if (status !== 0) return _err("detachProxy failed with status " + status);
+        if (status !== 0 && status !== true) return _err("detachProxy failed with status " + status);
 
         var after = _mcpReadProxyState(item);
         if (after.error) return _err(after.error);
@@ -10481,7 +10531,7 @@ function applyEffectToMultipleClips(trackType, trackIndex, clipIndicesJson, effe
         for (var i = 0; i < clipIndices.length; i++) {
             var ci = parseInt(clipIndices[i], 10);
             try {
-                var qeClip = qeTrack.getItemAt(ci);
+                var qeClip = _qeClipItem(qeTrack, ci);
                 if (!qeClip) { results.push({clipIndex: ci, success: false, error: "clip not found"}); continue; }
                 qeClip.addVideoEffect(qe.project.getVideoEffectByName(effectName));
                 results.push({clipIndex: ci, success: true, effect: effectName});
@@ -12139,7 +12189,7 @@ function getInstalledCodecs() {
 // ---------------------------------------------------------------------------
 function _getCropComponent(trackIndex, clipIndex) { if (!app.project) return null; var seq = app.project.activeSequence; if (!seq) return null; trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; if (trackIndex >= seq.videoTracks.numTracks) return null; var track = seq.videoTracks[trackIndex]; if (!track.clips || clipIndex >= track.clips.numItems) return null; var clip = track.clips[clipIndex]; for (var i = 0; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "Crop") return clip.components[i]; } return null; }
 
-function setCrop(trackIndex, clipIndex, left, right, top, bottom) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; left = parseFloat(left) || 0; right = parseFloat(right) || 0; top = parseFloat(top) || 0; bottom = parseFloat(bottom) || 0; var crop = _getCropComponent(trackIndex, clipIndex); if (!crop) { app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = qeTrack.getItemAt(clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Crop")); crop = _getCropComponent(trackIndex, clipIndex); if (!crop) return _err("Failed to apply Crop effect"); } var leftP = crop.properties.getParamForDisplayName("Left"); var rightP = crop.properties.getParamForDisplayName("Right"); var topP = crop.properties.getParamForDisplayName("Top"); var bottomP = crop.properties.getParamForDisplayName("Bottom"); if (leftP) leftP.setValue(left, true); if (rightP) rightP.setValue(right, true); if (topP) topP.setValue(top, true); if (bottomP) bottomP.setValue(bottom, true); return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, left: left, right: right, top: top, bottom: bottom }); } catch (e) { return _err("setCrop failed: " + e.message); } }
+function setCrop(trackIndex, clipIndex, left, right, top, bottom) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; left = parseFloat(left) || 0; right = parseFloat(right) || 0; top = parseFloat(top) || 0; bottom = parseFloat(bottom) || 0; var crop = _getCropComponent(trackIndex, clipIndex); if (!crop) { app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = _qeClipItem(qeTrack, clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Crop")); crop = _getCropComponent(trackIndex, clipIndex); if (!crop) return _err("Failed to apply Crop effect"); } var leftP = crop.properties.getParamForDisplayName("Left"); var rightP = crop.properties.getParamForDisplayName("Right"); var topP = crop.properties.getParamForDisplayName("Top"); var bottomP = crop.properties.getParamForDisplayName("Bottom"); if (leftP) leftP.setValue(left, true); if (rightP) rightP.setValue(right, true); if (topP) topP.setValue(top, true); if (bottomP) bottomP.setValue(bottom, true); return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, left: left, right: right, top: top, bottom: bottom }); } catch (e) { return _err("setCrop failed: " + e.message); } }
 
 function getCrop(trackIndex, clipIndex) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; var crop = _getCropComponent(trackIndex, clipIndex); if (!crop) return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, left: 0, right: 0, top: 0, bottom: 0, hasCropEffect: false }); var leftP = crop.properties.getParamForDisplayName("Left"); var rightP = crop.properties.getParamForDisplayName("Right"); var topP = crop.properties.getParamForDisplayName("Top"); var bottomP = crop.properties.getParamForDisplayName("Bottom"); return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, left: leftP ? leftP.getValue() : 0, right: rightP ? rightP.getValue() : 0, top: topP ? topP.getValue() : 0, bottom: bottomP ? bottomP.getValue() : 0, hasCropEffect: true }); } catch (e) { return _err("getCrop failed: " + e.message); } }
 
@@ -12183,45 +12233,45 @@ function crossFadeClips(trackIndex, clipIndexA, clipIndexB, durationSeconds) { t
 // ---------------------------------------------------------------------------
 // Stabilization
 // ---------------------------------------------------------------------------
-function applyWarpStabilizer(trackIndex, clipIndex, smoothness) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; smoothness = parseFloat(smoothness) || 50; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = qeTrack.getItemAt(clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Warp Stabilizer")); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; for (var i = 2; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "Warp Stabilizer") { var smoothP = clip.components[i].properties.getParamForDisplayName("Smoothness"); if (smoothP) smoothP.setValue(smoothness, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, smoothness: smoothness, applied: true }); } catch (e) { return _err("applyWarpStabilizer failed: " + e.message); } }
+function applyWarpStabilizer(trackIndex, clipIndex, smoothness) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; smoothness = parseFloat(smoothness) || 50; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = _qeClipItem(qeTrack, clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Warp Stabilizer")); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; for (var i = 2; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "Warp Stabilizer") { var smoothP = clip.components[i].properties.getParamForDisplayName("Smoothness"); if (smoothP) smoothP.setValue(smoothness, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, smoothness: smoothness, applied: true }); } catch (e) { return _err("applyWarpStabilizer failed: " + e.message); } }
 
 function getStabilizationStatus(trackIndex, clipIndex) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; if (!clip) return _err("Clip not found"); var found = false; var status = "not_applied"; for (var i = 2; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "Warp Stabilizer") { found = true; status = "applied"; break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, hasWarpStabilizer: found, status: status }); } catch (e) { return _err("getStabilizationStatus failed: " + e.message); } }
 
 // ---------------------------------------------------------------------------
 // Lens Distortion
 // ---------------------------------------------------------------------------
-function applyLensDistortionRemoval(trackIndex, clipIndex, curvature) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; curvature = parseFloat(curvature) || -50; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = qeTrack.getItemAt(clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Lens Distortion")); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; for (var i = 2; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "Lens Distortion") { var curvP = clip.components[i].properties.getParamForDisplayName("Curvature"); if (curvP) curvP.setValue(curvature, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, curvature: curvature, applied: true }); } catch (e) { return _err("applyLensDistortionRemoval failed: " + e.message); } }
+function applyLensDistortionRemoval(trackIndex, clipIndex, curvature) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; curvature = parseFloat(curvature) || -50; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = _qeClipItem(qeTrack, clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Lens Distortion")); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; for (var i = 2; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "Lens Distortion") { var curvP = clip.components[i].properties.getParamForDisplayName("Curvature"); if (curvP) curvP.setValue(curvature, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, curvature: curvature, applied: true }); } catch (e) { return _err("applyLensDistortionRemoval failed: " + e.message); } }
 
 // ---------------------------------------------------------------------------
 // Noise Reduction
 // ---------------------------------------------------------------------------
-function applyVideoNoiseReduction(trackIndex, clipIndex, amount) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; amount = parseFloat(amount) || 2; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = qeTrack.getItemAt(clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Median")); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; for (var i = 2; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "Median") { var radP = clip.components[i].properties.getParamForDisplayName("Radius"); if (radP) radP.setValue(amount, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, amount: amount, effect: "Median", applied: true }); } catch (e) { return _err("applyVideoNoiseReduction failed: " + e.message); } }
+function applyVideoNoiseReduction(trackIndex, clipIndex, amount) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; amount = parseFloat(amount) || 2; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = _qeClipItem(qeTrack, clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Median")); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; for (var i = 2; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "Median") { var radP = clip.components[i].properties.getParamForDisplayName("Radius"); if (radP) radP.setValue(amount, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, amount: amount, effect: "Median", applied: true }); } catch (e) { return _err("applyVideoNoiseReduction failed: " + e.message); } }
 
-function applyAudioNoiseReduction(trackIndex, clipIndex, amount) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; amount = parseFloat(amount) || 50; if (trackIndex >= seq.audioTracks.numTracks) return _err("Audio track index out of range"); app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getAudioTrackAt(trackIndex); var qeClip = qeTrack.getItemAt(clipIndex); qeClip.addAudioEffect(qe.project.getAudioEffectByName("DeNoise")); var clip = seq.audioTracks[trackIndex].clips[clipIndex]; for (var i = 0; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "DeNoise") { var amtP = clip.components[i].properties.getParamForDisplayName("Amount"); if (amtP) amtP.setValue(amount, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, amount: amount, effect: "DeNoise", applied: true }); } catch (e) { return _err("applyAudioNoiseReduction failed: " + e.message); } }
+function applyAudioNoiseReduction(trackIndex, clipIndex, amount) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; amount = parseFloat(amount) || 50; if (trackIndex >= seq.audioTracks.numTracks) return _err("Audio track index out of range"); app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getAudioTrackAt(trackIndex); var qeClip = _qeClipItem(qeTrack, clipIndex); qeClip.addAudioEffect(qe.project.getAudioEffectByName("DeNoise")); var clip = seq.audioTracks[trackIndex].clips[clipIndex]; for (var i = 0; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "DeNoise") { var amtP = clip.components[i].properties.getParamForDisplayName("Amount"); if (amtP) amtP.setValue(amount, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, amount: amount, effect: "DeNoise", applied: true }); } catch (e) { return _err("applyAudioNoiseReduction failed: " + e.message); } }
 
-function applyDeReverb(trackIndex, clipIndex, amount) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; amount = parseFloat(amount) || 50; if (trackIndex >= seq.audioTracks.numTracks) return _err("Audio track index out of range"); app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getAudioTrackAt(trackIndex); var qeClip = qeTrack.getItemAt(clipIndex); qeClip.addAudioEffect(qe.project.getAudioEffectByName("DeReverb")); var clip = seq.audioTracks[trackIndex].clips[clipIndex]; for (var i = 0; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "DeReverb") { var amtP = clip.components[i].properties.getParamForDisplayName("Amount"); if (amtP) amtP.setValue(amount, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, amount: amount, effect: "DeReverb", applied: true }); } catch (e) { return _err("applyDeReverb failed: " + e.message); } }
+function applyDeReverb(trackIndex, clipIndex, amount) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; amount = parseFloat(amount) || 50; if (trackIndex >= seq.audioTracks.numTracks) return _err("Audio track index out of range"); app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getAudioTrackAt(trackIndex); var qeClip = _qeClipItem(qeTrack, clipIndex); qeClip.addAudioEffect(qe.project.getAudioEffectByName("DeReverb")); var clip = seq.audioTracks[trackIndex].clips[clipIndex]; for (var i = 0; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "DeReverb") { var amtP = clip.components[i].properties.getParamForDisplayName("Amount"); if (amtP) amtP.setValue(amount, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, amount: amount, effect: "DeReverb", applied: true }); } catch (e) { return _err("applyDeReverb failed: " + e.message); } }
 
-function applyDeHum(trackIndex, clipIndex, frequency) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; frequency = parseFloat(frequency) || 60; if (trackIndex >= seq.audioTracks.numTracks) return _err("Audio track index out of range"); app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getAudioTrackAt(trackIndex); var qeClip = qeTrack.getItemAt(clipIndex); qeClip.addAudioEffect(qe.project.getAudioEffectByName("DeHum")); var clip = seq.audioTracks[trackIndex].clips[clipIndex]; for (var i = 0; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "DeHum") { var freqP = clip.components[i].properties.getParamForDisplayName("Frequency"); if (freqP) freqP.setValue(frequency, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, frequency: frequency, effect: "DeHum", applied: true }); } catch (e) { return _err("applyDeHum failed: " + e.message); } }
+function applyDeHum(trackIndex, clipIndex, frequency) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; frequency = parseFloat(frequency) || 60; if (trackIndex >= seq.audioTracks.numTracks) return _err("Audio track index out of range"); app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getAudioTrackAt(trackIndex); var qeClip = _qeClipItem(qeTrack, clipIndex); qeClip.addAudioEffect(qe.project.getAudioEffectByName("DeHum")); var clip = seq.audioTracks[trackIndex].clips[clipIndex]; for (var i = 0; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "DeHum") { var freqP = clip.components[i].properties.getParamForDisplayName("Frequency"); if (freqP) freqP.setValue(frequency, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, frequency: frequency, effect: "DeHum", applied: true }); } catch (e) { return _err("applyDeHum failed: " + e.message); } }
 
 // ---------------------------------------------------------------------------
 // Blur & Sharpen
 // ---------------------------------------------------------------------------
-function applyGaussianBlur(trackIndex, clipIndex, blurriness) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; blurriness = parseFloat(blurriness) || 10; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = qeTrack.getItemAt(clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Gaussian Blur")); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; for (var i = 2; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "Gaussian Blur") { var blurP = clip.components[i].properties.getParamForDisplayName("Blurriness"); if (blurP) blurP.setValue(blurriness, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, blurriness: blurriness, effect: "Gaussian Blur", applied: true }); } catch (e) { return _err("applyGaussianBlur failed: " + e.message); } }
+function applyGaussianBlur(trackIndex, clipIndex, blurriness) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; blurriness = parseFloat(blurriness) || 10; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = _qeClipItem(qeTrack, clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Gaussian Blur")); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; for (var i = 2; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "Gaussian Blur") { var blurP = clip.components[i].properties.getParamForDisplayName("Blurriness"); if (blurP) blurP.setValue(blurriness, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, blurriness: blurriness, effect: "Gaussian Blur", applied: true }); } catch (e) { return _err("applyGaussianBlur failed: " + e.message); } }
 
-function applyDirectionalBlur(trackIndex, clipIndex, direction, length) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; direction = parseFloat(direction) || 0; length = parseFloat(length) || 10; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = qeTrack.getItemAt(clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Directional Blur")); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; for (var i = 2; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "Directional Blur") { var dirP = clip.components[i].properties.getParamForDisplayName("Direction"); var lenP = clip.components[i].properties.getParamForDisplayName("Blur Length"); if (dirP) dirP.setValue(direction, true); if (lenP) lenP.setValue(length, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, direction: direction, length: length, effect: "Directional Blur", applied: true }); } catch (e) { return _err("applyDirectionalBlur failed: " + e.message); } }
+function applyDirectionalBlur(trackIndex, clipIndex, direction, length) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; direction = parseFloat(direction) || 0; length = parseFloat(length) || 10; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = _qeClipItem(qeTrack, clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Directional Blur")); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; for (var i = 2; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "Directional Blur") { var dirP = clip.components[i].properties.getParamForDisplayName("Direction"); var lenP = clip.components[i].properties.getParamForDisplayName("Blur Length"); if (dirP) dirP.setValue(direction, true); if (lenP) lenP.setValue(length, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, direction: direction, length: length, effect: "Directional Blur", applied: true }); } catch (e) { return _err("applyDirectionalBlur failed: " + e.message); } }
 
-function applySharpen(trackIndex, clipIndex, amount) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; amount = parseFloat(amount) || 50; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = qeTrack.getItemAt(clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Sharpen")); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; for (var i = 2; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "Sharpen") { var amtP = clip.components[i].properties.getParamForDisplayName("Sharpen Amount"); if (amtP) amtP.setValue(amount, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, amount: amount, effect: "Sharpen", applied: true }); } catch (e) { return _err("applySharpen failed: " + e.message); } }
+function applySharpen(trackIndex, clipIndex, amount) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; amount = parseFloat(amount) || 50; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = _qeClipItem(qeTrack, clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Sharpen")); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; for (var i = 2; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "Sharpen") { var amtP = clip.components[i].properties.getParamForDisplayName("Sharpen Amount"); if (amtP) amtP.setValue(amount, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, amount: amount, effect: "Sharpen", applied: true }); } catch (e) { return _err("applySharpen failed: " + e.message); } }
 
-function applyUnsharpMask(trackIndex, clipIndex, amount, radius, threshold) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; amount = parseFloat(amount) || 100; radius = parseFloat(radius) || 2.0; threshold = parseFloat(threshold) || 3; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = qeTrack.getItemAt(clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Unsharp Mask")); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; for (var i = 2; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "Unsharp Mask") { var amtP = clip.components[i].properties.getParamForDisplayName("Amount"); var radP = clip.components[i].properties.getParamForDisplayName("Radius"); var thrP = clip.components[i].properties.getParamForDisplayName("Threshold"); if (amtP) amtP.setValue(amount, true); if (radP) radP.setValue(radius, true); if (thrP) thrP.setValue(threshold, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, amount: amount, radius: radius, threshold: threshold, effect: "Unsharp Mask", applied: true }); } catch (e) { return _err("applyUnsharpMask failed: " + e.message); } }
+function applyUnsharpMask(trackIndex, clipIndex, amount, radius, threshold) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; amount = parseFloat(amount) || 100; radius = parseFloat(radius) || 2.0; threshold = parseFloat(threshold) || 3; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = _qeClipItem(qeTrack, clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Unsharp Mask")); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; for (var i = 2; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "Unsharp Mask") { var amtP = clip.components[i].properties.getParamForDisplayName("Amount"); var radP = clip.components[i].properties.getParamForDisplayName("Radius"); var thrP = clip.components[i].properties.getParamForDisplayName("Threshold"); if (amtP) amtP.setValue(amount, true); if (radP) radP.setValue(radius, true); if (thrP) thrP.setValue(threshold, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, amount: amount, radius: radius, threshold: threshold, effect: "Unsharp Mask", applied: true }); } catch (e) { return _err("applyUnsharpMask failed: " + e.message); } }
 
 // ---------------------------------------------------------------------------
 // Distortion
 // ---------------------------------------------------------------------------
-function applyMirror(trackIndex, clipIndex, angle, centerX, centerY) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; angle = parseFloat(angle) || 0; centerX = parseFloat(centerX); centerY = parseFloat(centerY); if (isNaN(centerX)) centerX = 0.5; if (isNaN(centerY)) centerY = 0.5; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); var settings = seq.getSettings(); var seqW = parseInt(settings.videoFrameWidth) || 1920; var seqH = parseInt(settings.videoFrameHeight) || 1080; app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = qeTrack.getItemAt(clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Mirror")); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; for (var i = 2; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "Mirror") { var angP = clip.components[i].properties.getParamForDisplayName("Reflection Angle"); var cenP = clip.components[i].properties.getParamForDisplayName("Reflection Center"); if (angP) angP.setValue(angle, true); if (cenP) cenP.setValue([centerX * seqW, centerY * seqH], true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, angle: angle, centerX: centerX, centerY: centerY, effect: "Mirror", applied: true }); } catch (e) { return _err("applyMirror failed: " + e.message); } }
+function applyMirror(trackIndex, clipIndex, angle, centerX, centerY) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; angle = parseFloat(angle) || 0; centerX = parseFloat(centerX); centerY = parseFloat(centerY); if (isNaN(centerX)) centerX = 0.5; if (isNaN(centerY)) centerY = 0.5; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); var settings = seq.getSettings(); var seqW = parseInt(settings.videoFrameWidth) || 1920; var seqH = parseInt(settings.videoFrameHeight) || 1080; app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = _qeClipItem(qeTrack, clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Mirror")); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; for (var i = 2; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "Mirror") { var angP = clip.components[i].properties.getParamForDisplayName("Reflection Angle"); var cenP = clip.components[i].properties.getParamForDisplayName("Reflection Center"); if (angP) angP.setValue(angle, true); if (cenP) cenP.setValue([centerX * seqW, centerY * seqH], true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, angle: angle, centerX: centerX, centerY: centerY, effect: "Mirror", applied: true }); } catch (e) { return _err("applyMirror failed: " + e.message); } }
 
-function applyCornerPin(trackIndex, clipIndex, cornersJson) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; var corners = JSON.parse(cornersJson || "[]"); if (corners.length !== 4) return _err("Exactly 4 corner points required [{x,y},...]"); if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); var settings = seq.getSettings(); var seqW = parseInt(settings.videoFrameWidth) || 1920; var seqH = parseInt(settings.videoFrameHeight) || 1080; app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = qeTrack.getItemAt(clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Corner Pin")); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; var cornerNames = ["Upper Left", "Upper Right", "Lower Right", "Lower Left"]; for (var i = 2; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "Corner Pin") { for (var c = 0; c < 4; c++) { var p = clip.components[i].properties.getParamForDisplayName(cornerNames[c]); if (p) p.setValue([corners[c].x * seqW, corners[c].y * seqH], true); } break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, corners: corners, effect: "Corner Pin", applied: true }); } catch (e) { return _err("applyCornerPin failed: " + e.message); } }
+function applyCornerPin(trackIndex, clipIndex, cornersJson) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; var corners = JSON.parse(cornersJson || "[]"); if (corners.length !== 4) return _err("Exactly 4 corner points required [{x,y},...]"); if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); var settings = seq.getSettings(); var seqW = parseInt(settings.videoFrameWidth) || 1920; var seqH = parseInt(settings.videoFrameHeight) || 1080; app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = _qeClipItem(qeTrack, clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Corner Pin")); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; var cornerNames = ["Upper Left", "Upper Right", "Lower Right", "Lower Left"]; for (var i = 2; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "Corner Pin") { for (var c = 0; c < 4; c++) { var p = clip.components[i].properties.getParamForDisplayName(cornerNames[c]); if (p) p.setValue([corners[c].x * seqW, corners[c].y * seqH], true); } break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, corners: corners, effect: "Corner Pin", applied: true }); } catch (e) { return _err("applyCornerPin failed: " + e.message); } }
 
-function applySpherize(trackIndex, clipIndex, radius, centerX, centerY) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; radius = parseFloat(radius) || 50; centerX = parseFloat(centerX); centerY = parseFloat(centerY); if (isNaN(centerX)) centerX = 0.5; if (isNaN(centerY)) centerY = 0.5; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); var settings = seq.getSettings(); var seqW = parseInt(settings.videoFrameWidth) || 1920; var seqH = parseInt(settings.videoFrameHeight) || 1080; app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = qeTrack.getItemAt(clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Spherize")); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; for (var i = 2; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "Spherize") { var radP = clip.components[i].properties.getParamForDisplayName("Radius"); var cenP = clip.components[i].properties.getParamForDisplayName("Center of Sphere"); if (radP) radP.setValue(radius, true); if (cenP) cenP.setValue([centerX * seqW, centerY * seqH], true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, radius: radius, centerX: centerX, centerY: centerY, effect: "Spherize", applied: true }); } catch (e) { return _err("applySpherize failed: " + e.message); } }
+function applySpherize(trackIndex, clipIndex, radius, centerX, centerY) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; radius = parseFloat(radius) || 50; centerX = parseFloat(centerX); centerY = parseFloat(centerY); if (isNaN(centerX)) centerX = 0.5; if (isNaN(centerY)) centerY = 0.5; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); var settings = seq.getSettings(); var seqW = parseInt(settings.videoFrameWidth) || 1920; var seqH = parseInt(settings.videoFrameHeight) || 1080; app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = _qeClipItem(qeTrack, clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Spherize")); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; for (var i = 2; i < clip.components.numItems; i++) { if (clip.components[i].displayName === "Spherize") { var radP = clip.components[i].properties.getParamForDisplayName("Radius"); var cenP = clip.components[i].properties.getParamForDisplayName("Center of Sphere"); if (radP) radP.setValue(radius, true); if (cenP) cenP.setValue([centerX * seqW, centerY * seqH], true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, radius: radius, centerX: centerX, centerY: centerY, effect: "Spherize", applied: true }); } catch (e) { return _err("applySpherize failed: " + e.message); } }
 
 // ===========================================================================
 // Motion Graphics & Essential Graphics Panel
@@ -14153,7 +14203,7 @@ function applyEffectPreset(trackType, trackIndex, clipIndex, presetPath) {
         if (typeof qe !== "undefined" && qe.project) {
             var qeSeq = qe.project.getActiveSequence();
             var qeTrack = (trackType === "audio") ? qeSeq.getAudioTrackAt(trackIndex) : qeSeq.getVideoTrackAt(trackIndex);
-            var qeClip = qeTrack.getItemAt(clipIndex);
+            var qeClip = _qeClipItem(qeTrack, clipIndex);
             if (qeClip && qeClip.addEffectPreset) { qeClip.addEffectPreset(presetPath); return _ok({applied: true, clipName: clip.name, presetPath: presetPath}); }
         }
         return _err("Effect preset application requires QE DOM support");
@@ -14500,10 +14550,10 @@ function setVRProjection(sequenceIndex, projection) { try { if (!app.project) re
 function getVRProjection(sequenceIndex) { try { if (!app.project) return _err("No project is open"); sequenceIndex = parseInt(sequenceIndex, 10) || 0; var seqs = app.project.sequences; if (sequenceIndex >= seqs.numSequences) return _err("Sequence index out of range"); var seq = seqs[sequenceIndex]; var settings = seq.getSettings(); if (!settings) return _err("Cannot access sequence settings"); var projVal = settings.vrProjectionType || 0; var projNames = { 0: "none", 1: "equirectangular", 2: "cubemap" }; return _ok({ sequenceIndex: sequenceIndex, projection: projNames[projVal] || "unknown", projectionValue: projVal }); } catch (e) { return _err("getVRProjection failed: " + e.message); } }
 
 // 3. setVRFieldOfView
-function setVRFieldOfView(trackIndex, clipIndex, fov) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; fov = parseFloat(fov) || 90; if (fov < 1 || fov > 360) return _err("FOV must be between 1 and 360"); if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; if (!clip) return _err("Clip not found"); for (var i = 2; i < clip.components.numItems; i++) { var comp = clip.components[i]; if (comp.displayName === "VR Projection" || comp.displayName === "Immersive Video") { var fovP = comp.properties.getParamForDisplayName("Field of View"); if (fovP) { fovP.setValue(fov, true); return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, fov: fov }); } } } app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = qeTrack.getItemAt(clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("VR Projection")); var clip2 = seq.videoTracks[trackIndex].clips[clipIndex]; for (var j = 2; j < clip2.components.numItems; j++) { if (clip2.components[j].displayName === "VR Projection") { var fovP2 = clip2.components[j].properties.getParamForDisplayName("Field of View"); if (fovP2) fovP2.setValue(fov, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, fov: fov, effectApplied: true }); } catch (e) { return _err("setVRFieldOfView failed: " + e.message); } }
+function setVRFieldOfView(trackIndex, clipIndex, fov) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; fov = parseFloat(fov) || 90; if (fov < 1 || fov > 360) return _err("FOV must be between 1 and 360"); if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; if (!clip) return _err("Clip not found"); for (var i = 2; i < clip.components.numItems; i++) { var comp = clip.components[i]; if (comp.displayName === "VR Projection" || comp.displayName === "Immersive Video") { var fovP = comp.properties.getParamForDisplayName("Field of View"); if (fovP) { fovP.setValue(fov, true); return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, fov: fov }); } } } app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = _qeClipItem(qeTrack, clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("VR Projection")); var clip2 = seq.videoTracks[trackIndex].clips[clipIndex]; for (var j = 2; j < clip2.components.numItems; j++) { if (clip2.components[j].displayName === "VR Projection") { var fovP2 = clip2.components[j].properties.getParamForDisplayName("Field of View"); if (fovP2) fovP2.setValue(fov, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, fov: fov, effectApplied: true }); } catch (e) { return _err("setVRFieldOfView failed: " + e.message); } }
 
 // 4. rotateVRView
-function rotateVRView(trackIndex, clipIndex, pan, tilt, roll) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; pan = parseFloat(pan) || 0; tilt = parseFloat(tilt) || 0; roll = parseFloat(roll) || 0; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; if (!clip) return _err("Clip not found"); var found = false; for (var i = 2; i < clip.components.numItems; i++) { var comp = clip.components[i]; if (comp.displayName === "VR Projection" || comp.displayName === "Immersive Video") { var panP = comp.properties.getParamForDisplayName("Pan"); var tiltP = comp.properties.getParamForDisplayName("Tilt"); var rollP = comp.properties.getParamForDisplayName("Roll"); if (panP) panP.setValue(pan, true); if (tiltP) tiltP.setValue(tilt, true); if (rollP) rollP.setValue(roll, true); found = true; break; } } if (!found) { app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = qeTrack.getItemAt(clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("VR Projection")); var clip2 = seq.videoTracks[trackIndex].clips[clipIndex]; for (var j = 2; j < clip2.components.numItems; j++) { if (clip2.components[j].displayName === "VR Projection") { var panP2 = clip2.components[j].properties.getParamForDisplayName("Pan"); var tiltP2 = clip2.components[j].properties.getParamForDisplayName("Tilt"); var rollP2 = clip2.components[j].properties.getParamForDisplayName("Roll"); if (panP2) panP2.setValue(pan, true); if (tiltP2) tiltP2.setValue(tilt, true); if (rollP2) rollP2.setValue(roll, true); break; } } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, pan: pan, tilt: tilt, roll: roll }); } catch (e) { return _err("rotateVRView failed: " + e.message); } }
+function rotateVRView(trackIndex, clipIndex, pan, tilt, roll) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; pan = parseFloat(pan) || 0; tilt = parseFloat(tilt) || 0; roll = parseFloat(roll) || 0; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; if (!clip) return _err("Clip not found"); var found = false; for (var i = 2; i < clip.components.numItems; i++) { var comp = clip.components[i]; if (comp.displayName === "VR Projection" || comp.displayName === "Immersive Video") { var panP = comp.properties.getParamForDisplayName("Pan"); var tiltP = comp.properties.getParamForDisplayName("Tilt"); var rollP = comp.properties.getParamForDisplayName("Roll"); if (panP) panP.setValue(pan, true); if (tiltP) tiltP.setValue(tilt, true); if (rollP) rollP.setValue(roll, true); found = true; break; } } if (!found) { app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = _qeClipItem(qeTrack, clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("VR Projection")); var clip2 = seq.videoTracks[trackIndex].clips[clipIndex]; for (var j = 2; j < clip2.components.numItems; j++) { if (clip2.components[j].displayName === "VR Projection") { var panP2 = clip2.components[j].properties.getParamForDisplayName("Pan"); var tiltP2 = clip2.components[j].properties.getParamForDisplayName("Tilt"); var rollP2 = clip2.components[j].properties.getParamForDisplayName("Roll"); if (panP2) panP2.setValue(pan, true); if (tiltP2) tiltP2.setValue(tilt, true); if (rollP2) rollP2.setValue(roll, true); break; } } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, pan: pan, tilt: tilt, roll: roll }); } catch (e) { return _err("rotateVRView failed: " + e.message); } }
 
 // 5. createVRSequence
 function createVRSequence(name, width, height, fps, projection) { try { if (!app.project) return _err("No project is open"); name = name || "VR Sequence"; width = parseInt(width, 10) || 3840; height = parseInt(height, 10) || 1920; fps = parseFloat(fps) || 30; projection = projection || "equirectangular"; var projMap = { "equirectangular": 1, "cubemap": 2 }; var projVal = projMap[projection]; if (projVal === undefined) return _err("Unknown projection: " + projection); app.enableQE(); var newSeq = qe.project.newSequence(name, "custom"); var seq = app.project.activeSequence; if (!seq) return _err("Failed to create VR sequence"); var settings = seq.getSettings(); settings.videoFrameWidth = width; settings.videoFrameHeight = height; var ticks = String(Math.round(254016000000 / fps)); settings.videoFrameRate = new Time(); settings.videoFrameRate.ticks = ticks; settings.vrProjectionType = projVal; seq.setSettings(settings); return _ok({ name: name, width: width, height: height, fps: fps, projection: projection, sequenceID: seq.sequenceID }); } catch (e) { return _err("createVRSequence failed: " + e.message); } }
@@ -14555,10 +14605,10 @@ function setPixelAspectRatio(sequenceIndex, num, den) { try { if (!app.project) 
 function getPixelAspectRatio(sequenceIndex) { try { if (!app.project) return _err("No project is open"); sequenceIndex = parseInt(sequenceIndex, 10) || 0; var seqs = app.project.sequences; if (sequenceIndex >= seqs.numSequences) return _err("Sequence index out of range"); var seq = seqs[sequenceIndex]; var settings = seq.getSettings(); var par = settings.videoPixelAspectRatio || 1.0; return _ok({ sequenceIndex: sequenceIndex, pixelAspectRatio: par }); } catch (e) { return _err("getPixelAspectRatio failed: " + e.message); } }
 
 // 16. addLetterboxing
-function addLetterboxing(trackIndex, clipIndex, targetAspect) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; targetAspect = parseFloat(targetAspect) || 2.35; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; if (!clip) return _err("Clip not found"); var settings = seq.getSettings(); var seqW = parseInt(settings.videoFrameWidth) || 1920; var seqH = parseInt(settings.videoFrameHeight) || 1080; var currentAspect = seqW / seqH; if (targetAspect <= currentAspect) return _err("Target aspect must be wider than sequence aspect for letterboxing"); var visibleH = seqW / targetAspect; var cropPercent = ((seqH - visibleH) / 2 / seqH) * 100; app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = qeTrack.getItemAt(clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Crop")); var clip2 = seq.videoTracks[trackIndex].clips[clipIndex]; for (var i = 2; i < clip2.components.numItems; i++) { if (clip2.components[i].displayName === "Crop") { var topP = clip2.components[i].properties.getParamForDisplayName("Top"); var botP = clip2.components[i].properties.getParamForDisplayName("Bottom"); if (topP) topP.setValue(cropPercent, true); if (botP) botP.setValue(cropPercent, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, targetAspect: targetAspect, cropPercent: cropPercent }); } catch (e) { return _err("addLetterboxing failed: " + e.message); } }
+function addLetterboxing(trackIndex, clipIndex, targetAspect) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; targetAspect = parseFloat(targetAspect) || 2.35; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; if (!clip) return _err("Clip not found"); var settings = seq.getSettings(); var seqW = parseInt(settings.videoFrameWidth) || 1920; var seqH = parseInt(settings.videoFrameHeight) || 1080; var currentAspect = seqW / seqH; if (targetAspect <= currentAspect) return _err("Target aspect must be wider than sequence aspect for letterboxing"); var visibleH = seqW / targetAspect; var cropPercent = ((seqH - visibleH) / 2 / seqH) * 100; app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = _qeClipItem(qeTrack, clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Crop")); var clip2 = seq.videoTracks[trackIndex].clips[clipIndex]; for (var i = 2; i < clip2.components.numItems; i++) { if (clip2.components[i].displayName === "Crop") { var topP = clip2.components[i].properties.getParamForDisplayName("Top"); var botP = clip2.components[i].properties.getParamForDisplayName("Bottom"); if (topP) topP.setValue(cropPercent, true); if (botP) botP.setValue(cropPercent, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, targetAspect: targetAspect, cropPercent: cropPercent }); } catch (e) { return _err("addLetterboxing failed: " + e.message); } }
 
 // 17. addPillarboxing
-function addPillarboxing(trackIndex, clipIndex, targetAspect) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; targetAspect = parseFloat(targetAspect) || 1.33; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; if (!clip) return _err("Clip not found"); var settings = seq.getSettings(); var seqW = parseInt(settings.videoFrameWidth) || 1920; var seqH = parseInt(settings.videoFrameHeight) || 1080; var currentAspect = seqW / seqH; if (targetAspect >= currentAspect) return _err("Target aspect must be narrower than sequence aspect for pillarboxing"); var visibleW = seqH * targetAspect; var cropPercent = ((seqW - visibleW) / 2 / seqW) * 100; app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = qeTrack.getItemAt(clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Crop")); var clip2 = seq.videoTracks[trackIndex].clips[clipIndex]; for (var i = 2; i < clip2.components.numItems; i++) { if (clip2.components[i].displayName === "Crop") { var leftP = clip2.components[i].properties.getParamForDisplayName("Left"); var rightP = clip2.components[i].properties.getParamForDisplayName("Right"); if (leftP) leftP.setValue(cropPercent, true); if (rightP) rightP.setValue(cropPercent, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, targetAspect: targetAspect, cropPercent: cropPercent }); } catch (e) { return _err("addPillarboxing failed: " + e.message); } }
+function addPillarboxing(trackIndex, clipIndex, targetAspect) { try { if (!app.project) return _err("No project is open"); var seq = app.project.activeSequence; if (!seq) return _err("No active sequence"); trackIndex = parseInt(trackIndex, 10) || 0; clipIndex = parseInt(clipIndex, 10) || 0; targetAspect = parseFloat(targetAspect) || 1.33; if (trackIndex >= seq.videoTracks.numTracks) return _err("Track index out of range"); var clip = seq.videoTracks[trackIndex].clips[clipIndex]; if (!clip) return _err("Clip not found"); var settings = seq.getSettings(); var seqW = parseInt(settings.videoFrameWidth) || 1920; var seqH = parseInt(settings.videoFrameHeight) || 1080; var currentAspect = seqW / seqH; if (targetAspect >= currentAspect) return _err("Target aspect must be narrower than sequence aspect for pillarboxing"); var visibleW = seqH * targetAspect; var cropPercent = ((seqW - visibleW) / 2 / seqW) * 100; app.enableQE(); var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq.getVideoTrackAt(trackIndex); var qeClip = _qeClipItem(qeTrack, clipIndex); qeClip.addVideoEffect(qe.project.getVideoEffectByName("Crop")); var clip2 = seq.videoTracks[trackIndex].clips[clipIndex]; for (var i = 2; i < clip2.components.numItems; i++) { if (clip2.components[i].displayName === "Crop") { var leftP = clip2.components[i].properties.getParamForDisplayName("Left"); var rightP = clip2.components[i].properties.getParamForDisplayName("Right"); if (leftP) leftP.setValue(cropPercent, true); if (rightP) rightP.setValue(cropPercent, true); break; } } return _ok({ trackIndex: trackIndex, clipIndex: clipIndex, targetAspect: targetAspect, cropPercent: cropPercent }); } catch (e) { return _err("addPillarboxing failed: " + e.message); } }
 
 // ---------------------------------------------------------------------------
 // Timecode (18-21)
@@ -24109,7 +24159,7 @@ function createApprovalPackage(sequenceIndex, outputDir) {
         var rpt = "=== APPROVAL PACKAGE ===\nSequence: "+seq.name+"\nDate: "+new Date().toISOString()+"\nDuration: "+dur.toFixed(2)+"s\nClips: "+tc+"\n";
         var folder = new Folder(pkgDir); folder.create();
         var rf = new File(pkg.reportPath); rf.open("w"); rf.write(rpt); rf.close();
-        return _ok({ sequence: seq.name, package: pkg, duration: dur, clipCount: tc });
+        return _ok({ sequence: seq.name, "package": pkg, duration: dur, clipCount: tc });
     } catch (e) { return _err("createApprovalPackage failed: " + e.message); }
 }
 
@@ -28776,3 +28826,833 @@ function createProjectReport() {
         });
     } catch (e) { return _err("createProjectReport failed: " + e.message); }
 }
+
+
+// ---------------------------------------------------------------------------
+// applyLumetriPreset(trackIndex, clipIndicesJson, valuesJson)
+// Adiciona Lumetri Color (se faltar) nos clipes indicados da sequência ativa e aplica
+// valores por ÍNDICE de propriedade (independe do idioma do Premiere). Lê de volta.
+// valuesJson: {"19": 1.228, "20": 78.9, ...}   clipIndicesJson: [0,1,2] ou "all"
+// ---------------------------------------------------------------------------
+function applyLumetriPreset(trackIndex, clipIndicesJson, valuesJson) {
+    try {
+        if (!app.project) return _err("No project is open");
+        var seq = app.project.activeSequence; if (!seq) return _err("No active sequence");
+        trackIndex = parseInt(trackIndex, 10) || 0;
+        var track = seq.videoTracks[trackIndex]; if (!track) return _err("Video track not found");
+        var vals = JSON.parse(String(valuesJson || "{}"));
+        var list = [];
+        if (clipIndicesJson === "all" || clipIndicesJson === "\"all\"") { for (var a = 0; a < track.clips.numItems; a++) list.push(a); }
+        else { list = JSON.parse(String(clipIndicesJson)); }
+        app.enableQE();
+        var qeSeq = qe.project.getActiveSequence(); var qeTrack = qeSeq ? qeSeq.getVideoTrackAt(trackIndex) : null;
+        var fx = _qeVideoEffect("Lumetri Color");
+        var out = [];
+        for (var li = 0; li < list.length; li++) {
+            var idx = list[li]; var clip = track.clips[idx]; var res = { clip: idx, name: clip ? clip.name : "?" };
+            if (!clip) { res.error = "clip não existe"; out.push(res); continue; }
+            var comp = null;
+            for (var c = 0; c < clip.components.numItems; c++) if (clip.components[c].matchName === "AE.ADBE Lumetri") comp = clip.components[c];
+            if (!comp) {
+                var qi = _qeClipItem(qeTrack, idx);
+                if (!qi || !fx) { res.error = "QE: item/efeito não encontrado"; out.push(res); continue; }
+                qi.addVideoEffect(fx);
+                clip = app.project.activeSequence.videoTracks[trackIndex].clips[idx];
+                for (var c2 = 0; c2 < clip.components.numItems; c2++) if (clip.components[c2].matchName === "AE.ADBE Lumetri") comp = clip.components[c2];
+                if (!comp) { res.error = "Lumetri não anexou"; out.push(res); continue; }
+                res.added = true;
+            }
+            var ok = 0, bad = [];
+            for (var key in vals) {
+                if (!vals.hasOwnProperty(key)) continue;
+                var pr = comp.properties[parseInt(key, 10)];
+                try { pr.setValue(vals[key], true); var back = pr.getValue(); if (Math.abs(back - vals[key]) < 0.01) ok++; else bad.push(key + "=" + back); }
+                catch (e) { bad.push(key + ":" + e.message); }
+            }
+            res.setOk = ok; if (bad.length) res.mismatch = bad; out.push(res);
+        }
+        return _ok({ track: trackIndex, results: out });
+    } catch (e) { return _err("applyLumetriPreset failed: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Lista as propriedades do Lumetri de um clipe (índice, nome, valor) — diagnóstico.
+function lumetriProps(trackIndex, clipIndex) {
+    try {
+        var seq = app.project.activeSequence; var clip = seq.videoTracks[parseInt(trackIndex, 10) || 0].clips[parseInt(clipIndex, 10) || 0];
+        var comp = null; for (var c = 0; c < clip.components.numItems; c++) if (clip.components[c].matchName === "AE.ADBE Lumetri") comp = clip.components[c];
+        if (!comp) return _err("sem Lumetri");
+        var out = [];
+        for (var i = 0; i < comp.properties.numItems; i++) {
+            var pr = comp.properties[i], v = "";
+            try { v = pr.getValue(); v = (v === null || v === undefined) ? String(v) : String(v).substr(0, 80); } catch (e) { v = "ERR " + e.message; }
+            out.push(i + " | " + pr.displayName + " | " + v);
+        }
+        return _ok({ clip: clip.name, n: comp.properties.numItems, props: out });
+    } catch (e) { return _err("lumetriProps: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Resumo do Lumetri na V1 de todas as sequências (sem trocar a sequência ativa).
+function lumetriSurvey(idsJson) {
+    try {
+        var ids = JSON.parse(String(idsJson || "[5,6,7,14,15,16,19,20,21,22,23,24,34,35,38]"));
+        var out = [];
+        for (var si = 0; si < app.project.sequences.numSequences; si++) {
+            var seq = app.project.sequences[si]; var t = seq.videoTracks[0]; var rows = [];
+            for (var ci = 0; ci < t.clips.numItems; ci++) {
+                var clip = t.clips[ci], comp = null;
+                for (var c = 0; c < clip.components.numItems; c++) if (clip.components[c].matchName === "AE.ADBE Lumetri") comp = clip.components[c];
+                if (!comp) { rows.push(ci + " " + clip.name + " | sem Lumetri"); continue; }
+                var vs = [];
+                for (var k = 0; k < ids.length; k++) { var v; try { v = comp.properties[ids[k]].getValue(); } catch (e) { v = "ERR"; } if (typeof v === "number") v = Math.round(v * 1000) / 1000; vs.push(ids[k] + "=" + String(v).substr(0, 40)); }
+                rows.push(ci + " " + clip.name + " | " + vs.join(" "));
+            }
+            out.push({ seq: seq.name, n: t.clips.numItems, rows: rows });
+        }
+        return _ok(out);
+    } catch (e) { return _err("lumetriSurvey: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Grava propriedades do Lumetri (número ou texto) na V1 de uma sequência pelo nome; devolve leitura de volta.
+function lumetriSet(seqName, clipIndicesJson, valuesJson) {
+    try {
+        var seq = null;
+        for (var si = 0; si < app.project.sequences.numSequences; si++) if (app.project.sequences[si].name === seqName) seq = app.project.sequences[si];
+        if (!seq) return _err("sequência não encontrada: " + seqName);
+        var t = seq.videoTracks[0], list = [];
+        if (clipIndicesJson === "all") { for (var a = 0; a < t.clips.numItems; a++) list.push(a); } else list = JSON.parse(String(clipIndicesJson));
+        var vals = JSON.parse(String(valuesJson)), out = [];
+        for (var li = 0; li < list.length; li++) {
+            var clip = t.clips[list[li]], comp = null, res = { clip: list[li] };
+            for (var c = 0; c < clip.components.numItems; c++) if (clip.components[c].matchName === "AE.ADBE Lumetri") comp = clip.components[c];
+            if (!comp) { res.error = "sem Lumetri"; out.push(res); continue; }
+            var back = {};
+            for (var k in vals) { if (!vals.hasOwnProperty(k)) continue; var pr = comp.properties[parseInt(k, 10)];
+                try { pr.setValue(vals[k], true); } catch (e) { back[k] = "ERR " + e.message; continue; }
+                try { var v = pr.getValue(); back[k] = (typeof v === "number") ? Math.round(v * 1000) / 1000 : String(v).substr(0, 120); } catch (e2) { back[k] = "ERRread"; } }
+            res.back = back; out.push(res);
+        }
+        return _ok(out);
+    } catch (e) { return _err("lumetriSet: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Abre a sequência pelo nome, posiciona no meio de um clipe da V1 e exporta o quadro em PNG (QE).
+function frameAt(seqName, clipIndex, outPath) {
+    try {
+        var seq = null;
+        for (var si = 0; si < app.project.sequences.numSequences; si++) if (app.project.sequences[si].name === seqName) seq = app.project.sequences[si];
+        if (!seq) return _err("sequência não encontrada: " + seqName);
+        app.project.openSequence(seq.sequenceID);
+        var clip = seq.videoTracks[0].clips[parseInt(clipIndex, 10) || 0];
+        var a0 = parseFloat(clip.start.ticks), a1 = parseFloat(clip.end.ticks), step = 254016000000 / 2, pick = (a0 + a1) / 2;
+        for (var tt = a0 + step; tt < a1 - step; tt += step) {
+            var livre = true;
+            for (var vt = 1; vt < seq.videoTracks.numTracks && livre; vt++) { var tr = seq.videoTracks[vt];
+                for (var k2 = 0; k2 < tr.clips.numItems; k2++) { var o = tr.clips[k2]; if (o.disabled || (tr.isMuted && tr.isMuted())) continue; if (parseFloat(o.start.ticks) <= tt && parseFloat(o.end.ticks) > tt) { livre = false; break; } } }
+            if (livre) { pick = tt; break; }
+        }
+        var ticks = _f2t(_t2f(pick));
+        seq.setPlayerPosition(ticks);
+        app.enableQE();
+        var q = qe.project.getActiveSequence();
+        var fr = Math.round(parseFloat(ticks) / 254016000000 * 24000 / 1001), ff = fr % 24, ss_ = Math.floor(fr / 24);
+        var p2 = function (n) { return (n < 10 ? "0" : "") + n; };
+        var tc = p2(Math.floor(ss_ / 3600)) + ":" + p2(Math.floor(ss_ / 60) % 60) + ":" + p2(ss_ % 60) + ":" + p2(ff);
+        q.exportFramePNG(tc, outPath);
+        return _ok({ active: app.project.activeSequence.name, ticks: ticks, tc: tc, out: outPath });
+    } catch (e) { return _err("frameAt: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Faixas de tempo (s) dos clipes de cada trilha de vídeo de uma sequência — diagnóstico.
+function trackRanges(seqName, maxPer) {
+    try {
+        var seq = null; for (var si = 0; si < app.project.sequences.numSequences; si++) if (app.project.sequences[si].name === seqName) seq = app.project.sequences[si];
+        var out = [], T = 254016000000, m = parseInt(maxPer, 10) || 6;
+        for (var v = 0; v < seq.videoTracks.numTracks; v++) { var tr = seq.videoTracks[v], r = [];
+            for (var k = 0; k < Math.min(tr.clips.numItems, m); k++) { var c = tr.clips[k]; r.push((Math.round(parseFloat(c.start.ticks) / T * 100) / 100) + "-" + (Math.round(parseFloat(c.end.ticks) / T * 100) / 100) + (c.disabled ? "(off)" : "") + " " + c.name.substr(0, 18)); }
+            out.push("V" + (v + 1) + (tr.isMuted() ? "(mute)" : "") + ": " + r.join(" | ")); }
+        return _ok(out);
+    } catch (e) { return _err("trackRanges: " + e.message); }
+}
+
+function verTeste() { return _ok({ v: "t10-reload-ok", tc: "00:00:01:00" }); }
+
+// Varre os índices da lista "LUT de entrada" (prop 6) e lê o nome resultante (prop 5). Restaura o índice original.
+function lutListScan(seqName, clipIndex, maxIdx) {
+    try {
+        var seq = null; for (var si = 0; si < app.project.sequences.numSequences; si++) if (app.project.sequences[si].name === seqName) seq = app.project.sequences[si];
+        var clip = seq.videoTracks[0].clips[parseInt(clipIndex, 10) || 0], comp = null;
+        for (var c = 0; c < clip.components.numItems; c++) if (clip.components[c].matchName === "AE.ADBE Lumetri") comp = clip.components[c];
+        var p6 = comp.properties[6], p5 = comp.properties[5], orig6 = p6.getValue(), orig5 = p5.getValue(), out = [];
+        for (var i = 0; i <= (parseInt(maxIdx, 10) || 40); i++) { try { p6.setValue(i, true); out.push(i + "=" + String(p5.getValue()).substr(0, 60) + " (" + p6.getValue() + ")"); } catch (e) { out.push(i + " ERR " + e.message); } }
+        p6.setValue(orig6, true); try { p5.setValue(orig5, true); } catch (e2) {}
+        return _ok({ orig6: orig6, list: out });
+    } catch (e) { return _err("lutListScan: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Cria cópia "LIMPA" de uma sequência trocando cada clipe de placeholders_ENG/ pelo arquivo de mesmo nome em cleanDir.
+// dryRun="1": só lista o que seria trocado (não cria nada).
+function makeLimpa(seqName, newName, cleanDir, binName, dryRun) {
+    try {
+        var T = 254016000000, src = null, i, v, k;
+        for (i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) src = app.project.sequences[i];
+        if (!src) return _err("sequência não encontrada: " + seqName);
+        var isPh = function (c) { try { return c.projectItem && String(c.projectItem.getMediaPath()).indexOf("/placeholders_ENG/") >= 0; } catch (e) { return false; } };
+        var plan = [];
+        for (v = 0; v < src.videoTracks.numTracks; v++) for (k = 0; k < src.videoTracks[v].clips.numItems; k++) { var c = src.videoTracks[v].clips[k];
+            if (isPh(c)) plan.push({ v: v, k: k, nome: String(c.projectItem.getMediaPath()).replace(/^.*\//, ""), ini: Math.round(parseFloat(c.start.ticks) / T * 1000) / 1000, fim: Math.round(parseFloat(c.end.ticks) / T * 1000) / 1000, inP: Math.round(parseFloat(c.inPoint.ticks) / T * 1000) / 1000, off: !!c.disabled, fx: c.components.numItems }); }
+        if (String(dryRun) === "1") return _ok({ seq: seqName, trocas: plan.length, plano: plan });
+        // bin + import dos limpos (uma vez)
+        var root = app.project.rootItem, bin = null;
+        for (i = 0; i < root.children.numItems; i++) if (root.children[i].name === binName && root.children[i].type === ProjectItemType.BIN) bin = root.children[i];
+        if (!bin) bin = root.createBin(binName);
+        var mapa = {}, fill = function () { mapa = {}; for (var j = 0; j < bin.children.numItems; j++) { var it = bin.children[j]; try { mapa[String(it.getMediaPath()).replace(/^.*\//, "")] = it; } catch (e) {} } };
+        fill();
+        var falta = [];
+        for (i = 0; i < plan.length; i++) if (!mapa[plan[i].nome]) { var f = cleanDir + "/" + plan[i].nome; if (falta.join("|").indexOf(f) < 0) falta.push(f); }
+        if (falta.length) { app.project.importFiles(falta, true, bin, false); fill(); }
+        // duplica
+        var antes = {}; for (i = 0; i < app.project.sequences.numSequences; i++) antes[app.project.sequences[i].sequenceID] = 1;
+        src.clone();
+        var dst = null; for (i = 0; i < app.project.sequences.numSequences; i++) if (!antes[app.project.sequences[i].sequenceID]) dst = app.project.sequences[i];
+        if (!dst) return _err("clone não criou sequência");
+        dst.name = newName;
+        var feitos = [], erros = [];
+        for (i = plan.length - 1; i >= 0; i--) { var p0 = plan[i], tr = dst.videoTracks[p0.v], alvo = null;
+            for (k = 0; k < tr.clips.numItems; k++) { var cc = tr.clips[k]; if (Math.abs(parseFloat(cc.start.ticks) / T - p0.ini) < 0.01 && isPh(cc)) alvo = cc; }
+            var item = mapa[p0.nome];
+            if (!alvo || !item) { erros.push(p0.nome + (alvo ? " sem item limpo" : " clipe não achado")); continue; }
+            var iniT = alvo.start.ticks, fimT = alvo.end.ticks, inT = alvo.inPoint.ticks;
+            alvo.remove(false, false);
+            var tIni = new Time(); tIni.ticks = String(iniT); tr.overwriteClip(item, tIni);
+            var novo = null; for (k = 0; k < tr.clips.numItems; k++) if (Math.abs(parseFloat(tr.clips[k].start.ticks) - parseFloat(iniT)) < T / 48) novo = tr.clips[k];
+            if (!novo) { erros.push(p0.nome + " não entrou"); continue; }
+            if (Math.abs(parseFloat(novo.inPoint.ticks) - parseFloat(inT)) > 1) { var ti = new Time(); ti.ticks = inT; novo.inPoint = ti; }
+            if (Math.abs(parseFloat(novo.end.ticks) - parseFloat(fimT)) > 1) { var te = new Time(); te.ticks = fimT; novo.end = te; }
+            if (p0.off) novo.disabled = true;
+            feitos.push(p0.nome + " " + p0.ini + "-" + (Math.round(parseFloat(novo.end.ticks) / T * 1000) / 1000) + (novo.disabled ? " (off)" : ""));
+        }
+        return _ok({ nova: dst.name, trocados: feitos.length, de: plan.length, erros: erros, feitos: feitos });
+    } catch (e) { return _err("makeLimpa: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Compara todas as propriedades do Lumetri entre dois clipes (V1). Devolve só os índices que diferem.
+function lumetriDiff(seqA, clipA, seqB, clipB) {
+    try {
+        var g = function (sn, ci) { var sq = null; for (var i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === sn) sq = app.project.sequences[i];
+            var cl = sq.videoTracks[0].clips[parseInt(ci, 10)]; for (var c = 0; c < cl.components.numItems; c++) if (cl.components[c].matchName === "AE.ADBE Lumetri") return cl.components[c]; return null; };
+        var a = g(seqA, clipA), b = g(seqB, clipB), out = [], nA = 0;
+        var count = function (sn, ci) { var sq = null; for (var i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === sn) sq = app.project.sequences[i];
+            var cl = sq.videoTracks[0].clips[parseInt(ci, 10)], n = 0; for (var c = 0; c < cl.components.numItems; c++) if (cl.components[c].matchName === "AE.ADBE Lumetri") n++; return n; };
+        for (var i = 0; i < a.properties.numItems; i++) { var va, vb; try { va = String(a.properties[i].getValue()); } catch (e) { va = "ERR"; } try { vb = String(b.properties[i].getValue()); } catch (e2) { vb = "ERR"; }
+            if (va !== vb) out.push(i + " | " + a.properties[i].displayName + " | A(" + va.length + ")=" + va.substr(0, 40) + " | B(" + vb.length + ")=" + vb.substr(0, 40)); }
+        return _ok({ lumetrisA: count(seqA, clipA), lumetrisB: count(seqB, clipB), difs: out });
+    } catch (e) { return _err("lumetriDiff: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Copia propriedades do Lumetri de um clipe-mestre para clipes da V1 de outra sequência (getValue -> setValue).
+function lumetriCopy(seqA, clipA, seqB, clipsJson, idsJson) {
+    try {
+        var gs = function (sn) { for (var i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === sn) return app.project.sequences[i]; return null; };
+        var gl = function (cl) { for (var c = 0; c < cl.components.numItems; c++) if (cl.components[c].matchName === "AE.ADBE Lumetri") return cl.components[c]; return null; };
+        var a = gl(gs(seqA).videoTracks[0].clips[parseInt(clipA, 10)]), tb = gs(seqB).videoTracks[0];
+        var ids = JSON.parse(String(idsJson)), lista = [];
+        if (clipsJson === "all") { for (var q = 0; q < tb.clips.numItems; q++) lista.push(q); } else lista = JSON.parse(String(clipsJson));
+        var out = [];
+        for (var li = 0; li < lista.length; li++) { var b = gl(tb.clips[lista[li]]), r = { clip: lista[li], ok: 0, falha: [] };
+            if (!b) { r.falha.push("sem Lumetri"); out.push(r); continue; }
+            for (var k = 0; k < ids.length; k++) { var id = ids[k];
+                try { var v = a.properties[id].getValue(); b.properties[id].setValue(v, true); if (String(b.properties[id].getValue()) === String(v)) r.ok++; else r.falha.push(id + " não pegou"); }
+                catch (e) { r.falha.push(id + ": " + e.message); } }
+            out.push(r); }
+        return _ok(out);
+    } catch (e) { return _err("lumetriCopy: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Diagnóstico de áudio: efeitos de áudio QE com um termo + trilhas de áudio de uma sequência.
+function audioDiag(seqName, termo) {
+    try {
+        app.enableQE(); var lista = qe.project.getAudioEffectList(), ach = [];
+        for (var k = 0; k < lista.length; k++) if (String(lista[k]).toLowerCase().indexOf(String(termo).toLowerCase()) >= 0) ach.push(String(lista[k]));
+        var seq = null; for (var i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) seq = app.project.sequences[i];
+        var T = 254016000000, tr = [];
+        for (var a = 0; a < seq.audioTracks.numTracks; a++) { var t = seq.audioTracks[a], r = [];
+            for (var c = 0; c < t.clips.numItems; c++) { var cl = t.clips[c]; r.push((Math.round(parseFloat(cl.start.ticks) / T * 100) / 100) + "-" + (Math.round(parseFloat(cl.end.ticks) / T * 100) / 100) + " " + cl.name.substr(0, 26) + (cl.disabled ? "(off)" : "") + " fx" + cl.components.numItems); }
+            tr.push("A" + (a + 1) + (t.isMuted() ? "(mute)" : "") + " [" + t.clips.numItems + "]: " + r.slice(0, 4).join(" | ") + (r.length > 4 ? " ..." : "")); }
+        return _ok({ efeitos: ach, totalEf: lista.length, trilhas: tr });
+    } catch (e) { return _err("audioDiag: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Nomes dos componentes (efeitos) dos clipes de uma trilha de áudio.
+function audioFx(seqName, trackIndex) {
+    try {
+        var seq = null; for (var i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) seq = app.project.sequences[i];
+        var t = seq.audioTracks[parseInt(trackIndex, 10) || 0], out = [];
+        for (var c = 0; c < t.clips.numItems; c++) { var cl = t.clips[c], n = []; for (var k = 0; k < cl.components.numItems; k++) n.push(cl.components[k].displayName + "/" + cl.components[k].matchName); out.push(c + ": " + n.join(", ")); }
+        return _ok(out);
+    } catch (e) { return _err("audioFx: " + e.message); }
+}
+
+// Lista os métodos do item QE de áudio (para saber se dá para remover efeito) + compara faixas A1 de duas sequências.
+function qeAudioMethods(seqName, trackIndex, clipIndex) {
+    try {
+        var seq = null; for (var i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) seq = app.project.sequences[i];
+        app.project.openSequence(seq.sequenceID); app.enableQE();
+        var qt = qe.project.getActiveSequence().getAudioTrackAt(parseInt(trackIndex, 10) || 0), it = _qeClipItem(qt, clipIndex);
+        var m = []; try { var r = it.reflect.methods; for (var k = 0; k < r.length; k++) m.push(String(r[k].name)); } catch (e) { m.push("reflect ERR " + e.message); }
+        var cl = seq.audioTracks[parseInt(trackIndex, 10) || 0].clips[parseInt(clipIndex, 10) || 0], cm = [];
+        try { var r2 = cl.components[1].reflect.methods; for (var k2 = 0; k2 < r2.length; k2++) cm.push(String(r2[k2].name)); } catch (e2) { cm.push("ERR " + e2.message); }
+        return _ok({ qeItem: m, component: cm, numEf: it.numComponents });
+    } catch (e) { return _err("qeAudioMethods: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Métodos/nomes dos componentes QE de um clipe de áudio.
+function qeAudioComps(seqName, trackIndex, clipIndex) {
+    try {
+        var seq = null; for (var i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) seq = app.project.sequences[i];
+        app.project.openSequence(seq.sequenceID); app.enableQE();
+        var it = _qeClipItem(qe.project.getActiveSequence().getAudioTrackAt(parseInt(trackIndex, 10) || 0), clipIndex), out = [];
+        for (var k = 0; k < it.numComponents; k++) { var c = it.getComponentAt(k), m = [];
+            try { var r = c.reflect.methods; for (var j = 0; j < r.length; j++) m.push(String(r[j].name)); } catch (e) { m.push("ERR"); }
+            out.push(k + " " + c.name + " :: " + m.join(",")); }
+        return _ok({ n: it.numComponents, comps: out });
+    } catch (e) { return _err("qeAudioComps: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Parâmetros (nome=valor) de cada instância "Clear" dos clipes da A1 de uma sequência.
+function clearParams(seqName, trackIndex) {
+    try {
+        var seq = null; for (var i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) seq = app.project.sequences[i];
+        app.project.openSequence(seq.sequenceID); app.enableQE();
+        var qt = qe.project.getActiveSequence().getAudioTrackAt(parseInt(trackIndex, 10) || 0), out = [];
+        for (var ci = 0; ci < seq.audioTracks[parseInt(trackIndex, 10) || 0].clips.numItems; ci++) { var it = _qeClipItem(qt, ci), linha = [];
+            for (var k = 0; k < it.numComponents; k++) { var c = it.getComponentAt(k); if (String(c.name) !== "Clear") continue;
+                var pl = c.getParamList(), pv = []; for (var j = 0; j < pl.length; j++) { var v; try { v = c.getParamValue(pl[j]); } catch (e) { v = "?"; } pv.push(pl[j] + "=" + String(v).substr(0, 12)); }
+                linha.push("[" + k + "] " + pv.join(" ")); }
+            out.push(ci + ": " + linha.join(" || ")); }
+        return _ok(out);
+    } catch (e) { return _err("clearParams: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Apaga sequências cujo nome termina com o sufixo dado (só para limpar cópias de teste).
+function deleteSeqsSuffix(suffix) {
+    try { var del = [];
+        for (var i = app.project.sequences.numSequences - 1; i >= 0; i--) { var sq = app.project.sequences[i], n = String(sq.name);
+            if (n.length >= suffix.length && n.substr(n.length - suffix.length) === suffix) { del.push(n); app.project.deleteSequence(sq); } }
+        return _ok(del);
+    } catch (e) { return _err("deleteSeqsSuffix: " + e.message); }
+}
+
+// Lê (e opcionalmente corrige) início/inPoint de um clipe de vídeo. startTicks/inTicks vazios = só leitura.
+function clipTimes(seqName, trackIndex, clipIndex, startTicks, inTicks) {
+    try {
+        var seq = null; for (var i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) seq = app.project.sequences[i];
+        var cl = seq.videoTracks[parseInt(trackIndex, 10)].clips[parseInt(clipIndex, 10)], T = 254016000000;
+        var rd = function () { return { nome: cl.name, ini: parseFloat(cl.start.ticks) / T, fim: parseFloat(cl.end.ticks) / T, inP: parseFloat(cl.inPoint.ticks) / T, outP: parseFloat(cl.outPoint.ticks) / T }; };
+        var antes = rd();
+        if (inTicks) { var a = new Time(); a.ticks = String(inTicks); cl.inPoint = a; }
+        if (startTicks) { var b = new Time(); b.ticks = String(startTicks); cl.start = b; }
+        return _ok({ antes: antes, depois: rd() });
+    } catch (e) { return _err("clipTimes: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Deixa exatamente UM "Clear" em cada clipe da A1 (remove duplicados, adiciona onde falta) e aplica os parâmetros.
+function clearPrepare(seqName, paramsJson) {
+    try {
+        var seq = null; for (var i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) seq = app.project.sequences[i];
+        if (!seq) return _err("sequência não encontrada");
+        app.project.openSequence(seq.sequenceID); app.enableQE();
+        var prm = JSON.parse(String(paramsJson)), qt = qe.project.getActiveSequence().getAudioTrackAt(0), out = [];
+        var fx = qe.project.getAudioEffectByName("Clear");
+        for (var ci = 0; ci < seq.audioTracks[0].clips.numItems; ci++) {
+            var it = _qeClipItem(qe.project.getActiveSequence().getAudioTrackAt(0), ci), idx = [], k, acao = "";
+            if (!it) { out.push(ci + " QE item nulo"); continue; }
+            for (k = 0; k < it.numComponents; k++) if (String(it.getComponentAt(k).name) === "Clear") idx.push(k);
+            for (k = idx.length - 1; k >= 1; k--) { it.getComponentAt(idx[k]).remove(); acao += "-dup "; }
+            if (idx.length === 0) { it.addAudioEffect(fx); acao += "+add "; it = _qeClipItem(qe.project.getActiveSequence().getAudioTrackAt(0), ci); }
+            var lido = [];
+            for (k = 0; k < it.numComponents; k++) { var c = it.getComponentAt(k); if (String(c.name) !== "Clear") continue;
+                for (var nm in prm) if (prm.hasOwnProperty(nm)) { try { c.setParamValue(nm, String(prm[nm])); } catch (e) { lido.push(nm + " ERR " + e.message); } }
+                var pl = c.getParamList(); for (var j = 0; j < pl.length; j++) lido.push(pl[j] + "=" + String(c.getParamValue(pl[j])).substr(0, 8)); }
+            var n = 0; for (k = 0; k < it.numComponents; k++) if (String(it.getComponentAt(k).name) === "Clear") n++;
+            out.push(ci + " " + acao + "Clear x" + n + " | " + lido.join(" "));
+        }
+        return _ok(out);
+    } catch (e) { return _err("clearPrepare: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Testa formatos aceitos por setParamValue num Clear (clipe 0 da A1).
+function clearParamTest(seqName) {
+    try {
+        var seq = null; for (var i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) seq = app.project.sequences[i];
+        app.project.openSequence(seq.sequenceID); app.enableQE();
+        var it = _qeClipItem(qe.project.getActiveSequence().getAudioTrackAt(0), 0), c = null;
+        for (var k = 0; k < it.numComponents; k++) if (String(it.getComponentAt(k).name) === "Clear") c = it.getComponentAt(k);
+        var tent = [["0,00", "s"], ["0", "s"], ["0.0", "s"], [0, "n"], [false, "b"]], out = [];
+        var ctl = ""; try { ctl = String(c.getParamControlValue("Ambience Gain")); } catch (e0) { ctl = "ERR " + e0.message; }
+        out.push("control=" + ctl);
+        for (var t = 0; t < tent.length; t++) { var r; try { c.setParamValue("Ambience Gain", tent[t][0]); r = "ok"; } catch (e) { r = e.message; } out.push(tent[t][1] + ":" + String(tent[t][0]) + " -> " + r + " | lido=" + c.getParamValue("Ambience Gain")); }
+        return _ok(out);
+    } catch (e) { return _err("clearParamTest: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Exporta a sequência inteira só em áudio (preset .epr) de forma síncrona.
+function exportSeqAudio(seqName, outPath, presetPath) {
+    try {
+        var seq = null; for (var i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) seq = app.project.sequences[i];
+        if (!seq) return _err("sequência não encontrada");
+        var r = seq.exportAsMediaDirect(outPath, presetPath, 0);
+        var f = new File(outPath); return _ok({ ret: String(r), existe: f.exists, bytes: f.exists ? f.length : 0 });
+    } catch (e) { return _err("exportSeqAudio: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Troca todo o conteúdo da A1 por um único arquivo (off renderizado) começando em 0. Confere V1 antes/depois.
+function swapA1(seqName, wavPath, binName) {
+    try {
+        var seq = null; for (var i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) seq = app.project.sequences[i];
+        if (!seq) return _err("sequência não encontrada");
+        var root = app.project.rootItem, bin = null;
+        for (i = 0; i < root.children.numItems; i++) if (root.children[i].name === binName && root.children[i].type === ProjectItemType.BIN) bin = root.children[i];
+        if (!bin) bin = root.createBin(binName);
+        var nome = String(wavPath).replace(/^.*\//, ""), item = null;
+        var acha = function () { for (var j = 0; j < bin.children.numItems; j++) { try { if (String(bin.children[j].getMediaPath()).replace(/^.*\//, "") === nome) return bin.children[j]; } catch (e) {} } return null; };
+        item = acha(); if (!item) { app.project.importFiles([wavPath], true, bin, false); item = acha(); }
+        if (!item) return _err("não importou " + nome);
+        var v1antes = seq.videoTracks[0].clips.numItems, a1 = seq.audioTracks[0], removidos = 0;
+        for (i = a1.clips.numItems - 1; i >= 0; i--) { a1.clips[i].remove(false, false); removidos++; }
+        var t0 = new Time(); t0.ticks = "0"; a1.overwriteClip(item, t0);
+        var T = 254016000000, c = a1.clips.numItems ? a1.clips[0] : null;
+        return _ok({ removidos: removidos, a1Clipes: a1.clips.numItems, ini: c ? parseFloat(c.start.ticks) / T : -1, fim: c ? parseFloat(c.end.ticks) / T : -1, v1antes: v1antes, v1depois: seq.videoTracks[0].clips.numItems });
+    } catch (e) { return _err("swapA1: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Exporta o quadro de uma sequência num tempo (segundos) — PNG via QE com timecode.
+function frameAtTime(seqName, seconds, outPath) {
+    try {
+        var seq = null; for (var i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) seq = app.project.sequences[i];
+        app.project.openSequence(seq.sequenceID);
+        var fr = Math.round(parseFloat(seconds) * 24000 / 1001), ff = fr % 24, ss_ = Math.floor(fr / 24);
+        var p2 = function (n) { return (n < 10 ? "0" : "") + n; };
+        var tc = p2(Math.floor(ss_ / 3600)) + ":" + p2(Math.floor(ss_ / 60) % 60) + ":" + p2(ss_ % 60) + ":" + p2(ff);
+        app.enableQE(); qe.project.getActiveSequence().exportFramePNG(tc, outPath);
+        return _ok({ tc: tc, out: outPath });
+    } catch (e) { return _err("frameAtTime: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Início/inPoint/fim (s) de todos os clipes de uma trilha de vídeo.
+function vTrackTimes(seqName, trackIndex) {
+    try {
+        var seq = null; for (var i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) seq = app.project.sequences[i];
+        var t = seq.videoTracks[parseInt(trackIndex, 10)], T = 254016000000, out = [];
+        for (var c = 0; c < t.clips.numItems; c++) { var k = t.clips[c]; out.push([Math.round(parseFloat(k.start.ticks) / T * 1000) / 1000, Math.round(parseFloat(k.inPoint.ticks) / T * 1000) / 1000, Math.round(parseFloat(k.end.ticks) / T * 1000) / 1000, String(k.name).substr(0, 30)]); }
+        return _ok(out);
+    } catch (e) { return _err("vTrackTimes: " + e.message); }
+}
+
+// Renderiza uma cópia temporária da sequência com TODOS os placeholders (B-roll ENG) desligados; apaga a cópia no fim.
+function renderSemBroll(seqName, outPath, presetPath) {
+    try {
+        var src = null, i, v, k; for (i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) src = app.project.sequences[i];
+        if (!src) return _err("sequência não encontrada");
+        var antes = {}; for (i = 0; i < app.project.sequences.numSequences; i++) antes[app.project.sequences[i].sequenceID] = 1;
+        src.clone(); var tmp = null; for (i = 0; i < app.project.sequences.numSequences; i++) if (!antes[app.project.sequences[i].sequenceID]) tmp = app.project.sequences[i];
+        if (!tmp) return _err("clone falhou");
+        tmp.name = "_TEMP_RENDER_SEM_BROLL";
+        var off = 0;
+        for (v = 0; v < tmp.videoTracks.numTracks; v++) for (k = 0; k < tmp.videoTracks[v].clips.numItems; k++) { var c = tmp.videoTracks[v].clips[k];
+            var mp = ""; try { mp = String(c.projectItem.getMediaPath()); } catch (e) {}
+            if (mp.indexOf("/placeholders_ENG") >= 0 && !c.disabled) { c.disabled = true; off++; } }
+        var r = tmp.exportAsMediaDirect(outPath, presetPath, 0);
+        app.project.deleteSequence(tmp);
+        var f = new File(outPath);
+        return _ok({ desligados: off, ret: String(r), existe: f.exists, bytes: f.exists ? f.length : 0 });
+    } catch (e) { return _err("renderSemBroll: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Renderiza só a V1 (apresentadora): desliga tudo nas trilhas de vídeo acima, marca entrada/saída no trecho da V1 e exporta (in→out). Cópia temporária apagada no fim.
+function renderSoV1(seqName, outPath, presetPath, dryRun) {
+    try {
+        var src = null, i, v, k; for (i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) src = app.project.sequences[i];
+        if (!src) return _err("sequência não encontrada");
+        var antes = {}; for (i = 0; i < app.project.sequences.numSequences; i++) antes[app.project.sequences[i].sequenceID] = 1;
+        src.clone(); var tmp = null; for (i = 0; i < app.project.sequences.numSequences; i++) if (!antes[app.project.sequences[i].sequenceID]) tmp = app.project.sequences[i];
+        if (!tmp) return _err("clone falhou");
+        tmp.name = "_TEMP_RENDER_SO_V1";
+        var off = 0;
+        for (v = 1; v < tmp.videoTracks.numTracks; v++) for (k = 0; k < tmp.videoTracks[v].clips.numItems; k++) { var c = tmp.videoTracks[v].clips[k]; if (!c.disabled) { c.disabled = true; off++; } }
+        var t1 = tmp.videoTracks[0], a = t1.clips[0].start.ticks, b = t1.clips[t1.clips.numItems - 1].end.ticks, T = 254016000000;
+        var tIn = new Time(); tIn.ticks = String(a); var tOut = new Time(); tOut.ticks = String(b), modo = "";
+        try { tmp.setInPoint(tIn); tmp.setOutPoint(tOut); modo = "Time"; } catch (eT) { modo = "ERR Time " + eT.message; }
+        var rdIn = function () { try { return parseFloat(tmp.getInPointAsTime().ticks) / T; } catch (e1) { return "?" + String(tmp.getInPoint()); } };
+        var rdOut = function () { try { return parseFloat(tmp.getOutPointAsTime().ticks) / T; } catch (e2) { return "?" + String(tmp.getOutPoint()); } };
+        if (Math.abs(rdIn() - parseFloat(a) / T) > 0.05) { try { tmp.setInPoint(String(a)); tmp.setOutPoint(String(b)); modo += " +ticksStr"; } catch (eS) { modo += " ERR str"; } }
+        if (Math.abs(rdIn() - parseFloat(a) / T) > 0.05) { try { tmp.setInPoint(parseFloat(a) / T); tmp.setOutPoint(parseFloat(b) / T); modo += " +num"; } catch (eN) { modo += " ERR num"; } }
+        var lidoIn = rdIn() + " (" + modo + ")", lidoOut = rdOut();
+        if (Math.abs(rdIn() - parseFloat(a) / T) > 0.05 || Math.abs(rdOut() - parseFloat(b) / T) > 0.05) { app.project.deleteSequence(tmp); return _err("in/out não pegou: " + lidoIn + " / " + lidoOut); }
+        var r = "dry";
+        if (String(dryRun) !== "1") r = String(tmp.exportAsMediaDirect(outPath, presetPath, 1));
+        app.project.deleteSequence(tmp);
+        var f = new File(outPath);
+        return _ok({ desligados: off, de: parseFloat(a) / T, ate: parseFloat(b) / T, inLido: lidoIn, outLido: lidoOut, ret: r, bytes: f.exists ? f.length : 0 });
+    } catch (e) { return _err("renderSoV1: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Efeitos de vídeo por clipe (todas as trilhas) de uma sequência: índice, início, nome e componentes além de Opacidade/Movimento.
+function videoFxAll(seqName) {
+    try {
+        var seq = null; for (var i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) seq = app.project.sequences[i];
+        if (!seq) return _err("sequência não encontrada");
+        var T = 254016000000, out = [];
+        for (var v = 0; v < seq.videoTracks.numTracks; v++) { var t = seq.videoTracks[v];
+            for (var c = 0; c < t.clips.numItems; c++) { var cl = t.clips[c], n = [];
+                for (var k = 0; k < cl.components.numItems; k++) { var mn = cl.components[k].matchName; if (mn !== "AE.ADBE Opacity" && mn !== "AE.ADBE Motion") n.push(cl.components[k].displayName); }
+                if (n.length) out.push("V" + (v + 1) + "#" + c + " " + (Math.round(parseFloat(cl.start.ticks) / T * 100) / 100) + "-" + (Math.round(parseFloat(cl.end.ticks) / T * 100) / 100) + " " + String(cl.name).substr(0, 22) + " :: " + n.join(", ")); } }
+        var tr = []; try { for (v = 0; v < seq.videoTracks.numTracks; v++) { var tt = seq.videoTracks[v]; for (c = 0; c < tt.transitions.numItems; c++) { var x = tt.transitions[c]; tr.push("V" + (v + 1) + " " + (Math.round(parseFloat(x.start.ticks) / T * 100) / 100) + " " + x.name); } } } catch (e2) { tr.push("ERR " + e2.message); }
+        return _ok({ seq: seqName, efeitos: out, transicoes: tr });
+    } catch (e) { return _err("videoFxAll: " + e.message + " (linha " + e.line + ")"); }
+}
+// Lista nomes das sequências.
+function seqNames() { var o = []; for (var i = 0; i < app.project.sequences.numSequences; i++) o.push(app.project.sequences[i].name); return _ok(o); }
+
+// Remove transições de vídeo cujo nome contém `nome` (DOM; se não der, QE). Devolve o que sobrou.
+function removeVideoTransitions(seqName, nome) {
+    try {
+        var seq = null; for (var i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) seq = app.project.sequences[i];
+        if (!seq) return _err("sequência não encontrada");
+        var T = 254016000000, feitos = [], erros = [];
+        for (var v = 0; v < seq.videoTracks.numTracks; v++) { var t = seq.videoTracks[v];
+            for (var c = t.transitions.numItems - 1; c >= 0; c--) { var x = t.transitions[c];
+                if (String(x.name).indexOf(nome) < 0) continue;
+                var tt = Math.round(parseFloat(x.start.ticks) / T * 100) / 100;
+                try { x.remove(false, false); feitos.push("V" + (v + 1) + " " + tt); } catch (e) { erros.push(tt + ": " + e.message); } } }
+        var resto = []; for (v = 0; v < seq.videoTracks.numTracks; v++) for (c = 0; c < seq.videoTracks[v].transitions.numItems; c++) resto.push(String(seq.videoTracks[v].transitions[c].name));
+        return _ok({ removidas: feitos, erros: erros, restantes: resto });
+    } catch (e) { return _err("removeVideoTransitions: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Troca, NA PRÓPRIA sequência, clipes cuja mídia tem nome em mapJson {"PH_V1_02_FOTO_1.mp4": "/caminho/IMG_V1_02_FOTO_1.mp4"}.
+// Mantém início, inPoint, fim e estado ligado/desligado. Importa os arquivos novos no bin `binName`.
+function swapMedia(seqName, mapJson, binName) {
+    try {
+        var seq = null, i, v, k; for (i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) seq = app.project.sequences[i];
+        if (!seq) return _err("sequência não encontrada");
+        var mapa = JSON.parse(String(mapJson)), T = 254016000000;
+        var base = function (c) { try { return String(c.projectItem.getMediaPath()).replace(/^.*\//, ""); } catch (e) { return ""; } };
+        var root = app.project.rootItem, bin = null;
+        for (i = 0; i < root.children.numItems; i++) if (root.children[i].name === binName && root.children[i].type === ProjectItemType.BIN) bin = root.children[i];
+        if (!bin) bin = root.createBin(binName);
+        var itens = {}, carrega = function () { itens = {}; for (var j = 0; j < bin.children.numItems; j++) { try { itens[String(bin.children[j].getMediaPath())] = bin.children[j]; } catch (e) {} } };
+        carrega(); var faltam = [];
+        for (var key in mapa) if (mapa.hasOwnProperty(key) && !itens[mapa[key]]) faltam.push(mapa[key]);
+        if (faltam.length) { app.project.importFiles(faltam, true, bin, false); carrega(); }
+        var plano = [];
+        for (v = 0; v < seq.videoTracks.numTracks; v++) for (k = 0; k < seq.videoTracks[v].clips.numItems; k++) { var c = seq.videoTracks[v].clips[k], b = base(c);
+            if (mapa[b]) plano.push({ v: v, b: b, ini: c.start.ticks, fim: c.end.ticks, inP: c.inPoint.ticks, off: !!c.disabled }); }
+        var feitos = [], erros = [];
+        for (i = plano.length - 1; i >= 0; i--) { var p0 = plano[i], tr = seq.videoTracks[p0.v], alvo = null, item = itens[mapa[p0.b]];
+            if (!item) { erros.push(p0.b + " sem item"); continue; }
+            for (k = 0; k < tr.clips.numItems; k++) if (tr.clips[k].start.ticks === p0.ini && base(tr.clips[k]) === p0.b) alvo = tr.clips[k];
+            if (!alvo) { erros.push(p0.b + " não achado"); continue; }
+            alvo.remove(false, false);
+            var t0 = new Time(); t0.ticks = String(p0.ini); tr.overwriteClip(item, t0);
+            var novo = null, nb = String(mapa[p0.b]).replace(/^.*\//, "");
+            for (k = 0; k < tr.clips.numItems; k++) { var cc = tr.clips[k]; if (base(cc) === nb && parseFloat(cc.start.ticks) <= parseFloat(p0.ini) + T && parseFloat(cc.end.ticks) >= parseFloat(p0.ini)) novo = cc; }
+            if (!novo) { erros.push(p0.b + " não entrou"); continue; }
+            var a = new Time(); a.ticks = String(p0.inP); novo.inPoint = a;
+            var s0 = new Time(); s0.ticks = String(p0.ini); novo.start = s0;
+            var e0 = new Time(); e0.ticks = String(p0.fim); novo.end = e0;
+            if (p0.off) novo.disabled = true;
+            var ok = novo.start.ticks === String(p0.ini) && novo.end.ticks === String(p0.fim) && novo.inPoint.ticks === String(p0.inP);
+            feitos.push(nb + (ok ? "" : " ⚠ ini " + (parseFloat(novo.start.ticks) / T).toFixed(3) + " fim " + (parseFloat(novo.end.ticks) / T).toFixed(3) + " in " + (parseFloat(novo.inPoint.ticks) / T).toFixed(3)) + (p0.off ? " (off)" : ""));
+        }
+        return _ok({ seq: seqName, trocados: feitos.length, de: plano.length, erros: erros, detalhes: feitos });
+    } catch (e) { return _err("swapMedia: " + e.message + " (linha " + e.line + ")"); }
+}
+// Recarrega do disco itens do projeto cujo caminho termina com algum dos nomes (após re-render com o mesmo nome).
+function refreshMediaNamed(namesJson) {
+    try { var nomes = JSON.parse(String(namesJson)), out = [];
+        var walk = function (it) { for (var j = 0; j < it.children.numItems; j++) { var c = it.children[j];
+            if (c.type === ProjectItemType.BIN) { walk(c); continue; }
+            var mp = ""; try { mp = String(c.getMediaPath()); } catch (e) {}
+            for (var n = 0; n < nomes.length; n++) if (mp.length && mp.substr(mp.length - nomes[n].length) === nomes[n]) { var r = "?"; try { r = String(c.refreshMedia()); } catch (e2) { r = "ERR " + e2.message; } out.push(c.name + " -> " + r); } } };
+        walk(app.project.rootItem); return _ok(out);
+    } catch (e) { return _err("refreshMediaNamed: " + e.message); }
+}
+
+// Métodos dos objetos QE (sequência, trilha de vídeo) e do TrackItem DOM — diagnóstico.
+function qeReflect(seqName) {
+    try { var seq = null; for (var i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) seq = app.project.sequences[i];
+        app.project.openSequence(seq.sequenceID); app.enableQE();
+        var q = qe.project.getActiveSequence(), m = function (o) { var r = [], x = o.reflect.methods; for (var k = 0; k < x.length; k++) r.push(String(x[k].name)); return r.join(","); };
+        return _ok({ qeSeq: m(q), qeTrack: m(q.getVideoTrackAt(0)), domItem: m(seq.videoTracks[0].clips[0]), domSeq: m(seq) });
+    } catch (e) { return _err("qeReflect: " + e.message); }
+}
+
+// Extract (ripple) de um intervalo em TODAS as trilhas: marca entrada/saída (ticks), alveja todas as trilhas e roda qe extract.
+function extractRange(seqName, inTicks, outTicks) {
+    try {
+        var seq = null, i; for (i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) seq = app.project.sequences[i];
+        if (!seq) return _err("sequência não encontrada");
+        app.project.openSequence(seq.sequenceID); app.enableQE();
+        for (i = 0; i < seq.videoTracks.numTracks; i++) { try { seq.videoTracks[i].setTargeted(true, true); } catch (e) {} }
+        for (i = 0; i < seq.audioTracks.numTracks; i++) { try { seq.audioTracks[i].setTargeted(true, true); } catch (e) {} }
+        var a = new Time(); a.ticks = String(inTicks); var b = new Time(); b.ticks = String(outTicks);
+        seq.setInPoint(a); seq.setOutPoint(b);
+        var lidoIn = seq.getInPointAsTime().ticks, lidoOut = seq.getOutPointAsTime().ticks;
+        qe.project.getActiveSequence().extract();
+        return _ok({ inLido: lidoIn, outLido: lidoOut, pedido: [String(inTicks), String(outTicks)] });
+    } catch (e) { return _err("extractRange: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Descarta alterações: fecha o projeto atual SEM salvar e reabre o arquivo do disco.
+function revertProject() {
+    try { var p = app.project.path; app.project.closeDocument(0, 0); var ok = app.openDocument(p, true, true, true, true); return _ok({ reaberto: String(ok), path: p }); }
+    catch (e) { return _err("revertProject: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Remove os quadros [f0, f1) de TODAS as trilhas e fecha o buraco (ripple manual): razor QE + remove + move.
+// f0/f1 em quadros de 23,976 (timecode NDF base 24). onClone="1" faz numa cópia "_TESTE_CORTE" e devolve as faixas.
+function cutRippleAll(seqName, f0, f1, onClone) {
+    try {
+        var src = null, i, k; for (i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) src = app.project.sequences[i];
+        if (!src) return _err("sequência não encontrada");
+        var seq = src;
+        if (String(onClone) === "1") { var antes = {}; for (i = 0; i < app.project.sequences.numSequences; i++) antes[app.project.sequences[i].sequenceID] = 1;
+            src.clone(); for (i = 0; i < app.project.sequences.numSequences; i++) if (!antes[app.project.sequences[i].sequenceID]) seq = app.project.sequences[i]; seq.name = "_TESTE_CORTE"; }
+        f0 = parseInt(f0, 10); f1 = parseInt(f1, 10);
+        var FT = _FT23976, t0 = f0 * FT, t1 = f1 * FT, d = t1 - t0;
+        var p2 = function (n) { return (n < 10 ? "0" : "") + n; };
+        var tc = function (f) { var s_ = Math.floor(f / 24); return p2(Math.floor(s_ / 3600)) + ":" + p2(Math.floor(s_ / 60) % 60) + ":" + p2(s_ % 60) + ":" + p2(f % 24); };
+        app.project.openSequence(seq.sequenceID); app.enableQE(); var q = qe.project.getActiveSequence();
+        var trilhas = []; for (i = 0; i < seq.videoTracks.numTracks; i++) trilhas.push({ dom: seq.videoTracks[i], qe: q.getVideoTrackAt(i), n: "V" + (i + 1) });
+        for (i = 0; i < seq.audioTracks.numTracks; i++) trilhas.push({ dom: seq.audioTracks[i], qe: q.getAudioTrackAt(i), n: "A" + (i + 1) });
+        var log = [];
+        for (var j = 0; j < trilhas.length; j++) { var tr = trilhas[j];
+            var cruza = function (t) { for (var c = 0; c < tr.dom.clips.numItems; c++) { var it = tr.dom.clips[c]; if (parseFloat(it.start.ticks) < t && parseFloat(it.end.ticks) > t) return true; } return false; };
+            if (cruza(t0)) { tr.qe.razor(tc(f0)); log.push(tr.n + " razor " + tc(f0)); }
+            if (cruza(t1)) { tr.qe.razor(tc(f1)); log.push(tr.n + " razor " + tc(f1)); }
+            for (k = tr.dom.clips.numItems - 1; k >= 0; k--) { var it2 = tr.dom.clips[k];
+                if (parseFloat(it2.start.ticks) >= t0 - FT / 2 && parseFloat(it2.end.ticks) <= t1 + FT / 2) { it2.remove(false, false); log.push(tr.n + " removeu pedaço"); } }
+            var mover = []; for (k = 0; k < tr.dom.clips.numItems; k++) if (parseFloat(tr.dom.clips[k].start.ticks) >= t1 - FT / 2) mover.push(tr.dom.clips[k]);
+            for (k = 0; k < mover.length; k++) { var off = new Time(); off.ticks = String(-d); mover[k].move(off); }
+            if (mover.length) log.push(tr.n + " moveu " + mover.length);
+        }
+        return _ok({ seq: seq.name, removido_s: d / 254016000000, log: log });
+    } catch (e) { return _err("cutRippleAll: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Garante pelo menos `minAudio` trilhas de áudio (QE addTracks) e coloca arquivos: itensJson = [{"track":2,"path":"...","sec":0}]
+function placeAudio(seqName, minAudio, itensJson, binName) {
+    try {
+        var seq = null, i, k; for (i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) seq = app.project.sequences[i];
+        if (!seq) return _err("sequência não encontrada");
+        app.project.openSequence(seq.sequenceID); app.enableQE();
+        var antes = seq.audioTracks.numTracks, faltam = (parseInt(minAudio, 10) || 0) - antes;
+        if (faltam > 0) qe.project.getActiveSequence().addTracks(0, 0, faltam, 1, antes - 1, 0, 0, 0);
+        var depois = seq.audioTracks.numTracks;
+        var root = app.project.rootItem, bin = null;
+        for (i = 0; i < root.children.numItems; i++) if (root.children[i].name === binName && root.children[i].type === ProjectItemType.BIN) bin = root.children[i];
+        if (!bin) bin = root.createBin(binName);
+        var itens = JSON.parse(String(itensJson)), out = [];
+        var acha = function (p) { for (var j = 0; j < bin.children.numItems; j++) { try { if (String(bin.children[j].getMediaPath()) === p) return bin.children[j]; } catch (e) {} } return null; };
+        for (k = 0; k < itens.length; k++) { var it = itens[k], pi = acha(it.path);
+            if (!pi) { app.project.importFiles([it.path], true, bin, false); pi = acha(it.path); }
+            if (!pi) { out.push("não importou " + it.path); continue; }
+            var tr = seq.audioTracks[it.track]; if (!tr) { out.push("trilha " + it.track + " não existe"); continue; }
+            var t = new Time(); t.ticks = String(Math.round(parseFloat(it.sec) * _TPS)); tr.overwriteClip(pi, t);
+            var c = null; for (var q = 0; q < tr.clips.numItems; q++) if (Math.abs(parseFloat(tr.clips[q].start.ticks) / _TPS - parseFloat(it.sec)) < 0.05) c = tr.clips[q];
+            out.push("A" + (it.track + 1) + " " + String(it.path).replace(/^.*\//, "") + (c ? " " + (parseFloat(c.start.ticks) / _TPS).toFixed(3) + "-" + (parseFloat(c.end.ticks) / _TPS).toFixed(3) : " NÃO ENTROU"));
+        }
+        try { for (i = antes; i < seq.audioTracks.numTracks; i++) seq.audioTracks[i].name = (i === antes ? "MUSICA" : "SFX"); } catch (e3) {}
+        return _ok({ trilhasAntes: antes, trilhasDepois: depois, itens: out });
+    } catch (e) { return _err("placeAudio: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Clona uma sequência com novo nome (apaga antes uma existente com esse nome).
+function cloneSeq(seqName, newName) {
+    try { var src = null, i; for (i = app.project.sequences.numSequences - 1; i >= 0; i--) { var q = app.project.sequences[i]; if (q.name === newName) app.project.deleteSequence(q); }
+        for (i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) src = app.project.sequences[i];
+        var antes = {}; for (i = 0; i < app.project.sequences.numSequences; i++) antes[app.project.sequences[i].sequenceID] = 1;
+        src.clone(); var dst = null; for (i = 0; i < app.project.sequences.numSequences; i++) if (!antes[app.project.sequences[i].sequenceID]) dst = app.project.sequences[i];
+        dst.name = newName; return _ok({ nova: dst.name });
+    } catch (e) { return _err("cloneSeq: " + e.message); }
+}
+
+// Exporta SÓ a voz (A1): silencia as outras trilhas de áudio, exporta em WAV e restaura.
+function exportVoz(seqName, outPath, presetPath) {
+    try { var seq = null, i; for (i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) seq = app.project.sequences[i];
+        var est = []; for (i = 0; i < seq.audioTracks.numTracks; i++) { est.push(seq.audioTracks[i].isMuted()); if (i !== 0) seq.audioTracks[i].setMute(1); }
+        var r = seq.exportAsMediaDirect(outPath, presetPath, 0);
+        for (i = 0; i < seq.audioTracks.numTracks; i++) seq.audioTracks[i].setMute(est[i] ? 1 : 0);
+        var f = new File(outPath); return _ok({ ret: String(r), bytes: f.exists ? f.length : 0 });
+    } catch (e) { return _err("exportVoz: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Exporta a sequência inteira (vídeo+áudio) com um preset .epr, síncrono.
+function exportSeqFull(seqName, outPath, presetPath) {
+    try { var seq = null; for (var i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) seq = app.project.sequences[i];
+        if (!seq) return _err("sequência não encontrada");
+        var r = seq.exportAsMediaDirect(outPath, presetPath, 0); var f = new File(outPath);
+        return _ok({ ret: String(r), bytes: f.exists ? f.length : 0 });
+    } catch (e) { return _err("exportSeqFull: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Lista as instâncias de Lumetri de cada clipe da V1 (índice do componente, tem LUT?, sliders principais).
+// dedup="1": em clipes com mais de um Lumetri e pelo menos um com LUT, remove (via QE) os que NÃO têm LUT.
+function lumetriInstances(seqName, dedup) {
+    try {
+        var seq = null, i; for (i = 0; i < app.project.sequences.numSequences; i++) if (app.project.sequences[i].name === seqName) seq = app.project.sequences[i];
+        if (!seq) return _err("sequência não encontrada");
+        if (String(dedup) === "1") { app.project.openSequence(seq.sequenceID); app.enableQE(); }
+        var t = seq.videoTracks[0], out = [];
+        for (var c = 0; c < t.clips.numItems; c++) { var cl = t.clips[c], inst = [];
+            for (var k = 0; k < cl.components.numItems; k++) { var cp = cl.components[k]; if (cp.matchName !== "AE.ADBE Lumetri") continue;
+                var lut = ""; try { lut = String(cp.properties[4].getValue()); } catch (e) {}
+                var g = function (n) { try { return Math.round(cp.properties[n].getValue() * 100) / 100; } catch (e) { return "?"; } };
+                inst.push({ k: k, lut: lut.indexOf("/") >= 0, exp: g(19), con: g(20), hi: g(21), blk: g(24), sat: g(16), temp: g(14) }); }
+            var r = { clip: c, n: inst.length, inst: inst };
+            if (String(dedup) === "1" && inst.length > 1) { var temLut = false, j; for (j = 0; j < inst.length; j++) if (inst[j].lut) temLut = true;
+                if (temLut) { var qi = _qeClipItem(qe.project.getActiveSequence().getVideoTrackAt(0), c), rem = [];
+                    for (j = inst.length - 1; j >= 0; j--) if (!inst[j].lut) { try { qi.getComponentAt(inst[j].k).remove(); rem.push(inst[j].k); } catch (e2) { rem.push("ERR " + e2.message); } }
+                    r.removidos = rem; } }
+            out.push(r); }
+        return _ok(out);
+    } catch (e) { return _err("lumetriInstances: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Projeto aberto (caminho, nome, nº de sequências) — diagnóstico.
+function projInfo() { try { var p = app.project; return _ok({ path: p ? String(p.path) : "", name: p ? String(p.name) : "", seqs: p && p.sequences ? p.sequences.numSequences : -1 }); } catch (e) { return _err("projInfo: " + e.message); } }
+
+// Diagnóstico de QE: efeitos que contêm um termo + itens da trilha (tipo/nome/início).
+function qeDiagnostico(trackIndex, termo) {
+    try {
+        app.enableQE();
+        var s = qe.project.getActiveSequence(); var t = s.getVideoTrackAt(parseInt(trackIndex, 10) || 0);
+        var itens = [];
+        for (var i = 0; i < Math.min(t.numItems, 8); i++) { var it = t.getItemAt(i); itens.push({ i: i, type: String(it.type), name: String(it.name), start: String(it.start ? (it.start.secs !== undefined ? it.start.secs : it.start) : "") }); }
+        var lista = qe.project.getVideoEffectList(); var achados = [];
+        for (var k = 0; k < lista.length; k++) if (String(lista[k]).toLowerCase().indexOf(String(termo).toLowerCase()) >= 0) achados.push(String(lista[k]));
+        return _ok({ numItems: t.numItems, itens: itens, efeitos: achados, totalEfeitos: lista.length });
+    } catch (e) { return _err("qeDiagnostico: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Recarrega todas as funções do disco (premiere.jsx = carregador das partes) sem reiniciar o Premiere.
+// Use depois de recompilar o painel: evalCommand("hostReload").
+function hostReload() {
+    try {
+        var loader = __mcpHostDir + "/premiere.jsx";
+        $.evalFile(loader);
+        return _ok({ reloaded: true, from: loader, errors: (typeof __mcpLoadErr === "undefined" ? "" : __mcpLoadErr) || "nenhum" });
+    } catch (e) { return _err("hostReload falhou: " + e.message + " (linha " + e.line + ")"); }
+}
+
+
+// Alias de hostReload (nome novo força a primeira recarga quando a versão em memória é antiga).
+function hostReloadNow() { return hostReload(); }
+
+
+// ---------------------------------------------------------------------------
+// attachProxyByMediaPath(mediaPath, proxyPath)
+// Anexa o proxy em TODOS os itens do projeto (qualquer bin) que apontam para mediaPath.
+// (Importar XML cria um item por sequência para o mesmo arquivo; todos precisam do proxy.)
+// ---------------------------------------------------------------------------
+function attachProxyByMediaPath(mediaPath, proxyPath) {
+    try {
+        if (!app.project) return _err("No project is open");
+        // compara pelo NOME do arquivo: getMediaPath() pode vir como "///Volumes/..." ou codificado
+        var alvo = decodeURI(String(mediaPath)).replace(/^.*[\/\\]/, "").toLowerCase();
+        var px = new File(proxyPath); if (!px.exists) return _err("Proxy não existe: " + proxyPath);
+        var feitos = [], erros = [];
+        var walkProxy = function (bin) {
+            for (var i = 0; i < bin.children.numItems; i++) {
+                var it = bin.children[i];
+                if (it.type === ProjectItemType.BIN) { walkProxy(it); continue; }
+                var mp = ""; try { mp = String(it.getMediaPath() || ""); } catch (e) {}
+                if (!mp || decodeURI(mp).replace(/^.*[\/\\]/, "").toLowerCase() !== alvo) continue;
+                try {
+                    if (it.hasProxy && it.hasProxy()) { feitos.push(it.name + " (já tinha)"); continue; }
+                    var st = it.attachProxy(px.fsName, 0);
+                    if ((st === 0 || st === true) && it.hasProxy()) feitos.push(it.name); else erros.push(it.name + " status " + st);
+                } catch (e2) { erros.push(it.name + ": " + e2.message); }
+            }
+        };
+        walkProxy(app.project.rootItem);
+        return _ok({ media: mediaPath, proxy: px.fsName, anexados: feitos, erros: erros });
+    } catch (e) { return _err("attachProxyByMediaPath: " + e.message + " (linha " + e.line + ")"); }
+}
+
+
+// ---------------------------------------------------------------------------
+// organizeProjectBins(rulesJson): cria bins na raiz e move itens da raiz por regra (regex no nome).
+// rulesJson: [{"bin":"01 SEQUENCIAS","seq":true}, {"bin":"02 ...","re":"^(FECHADO|ABERTO) "}, ...]
+// A primeira regra que casar vence. Itens que não casam ficam na raiz.
+// ---------------------------------------------------------------------------
+function organizeProjectBins(rulesJson) {
+    try {
+        if (!app.project) return _err("No project is open");
+        var rules = JSON.parse(String(rulesJson)); var root = app.project.rootItem; var bins = {}; var moved = {};
+        function binFor(name) {
+            if (bins[name]) return bins[name];
+            for (var b = 0; b < root.children.numItems; b++) { var c = root.children[b]; if (c.type === ProjectItemType.BIN && c.name === name) { bins[name] = c; return c; } }
+            bins[name] = root.createBin(name); return bins[name];
+        }
+        var items = []; for (var i = 0; i < root.children.numItems; i++) items.push(root.children[i]);
+        for (var k = 0; k < items.length; k++) {
+            var it = items[k]; if (it.type === ProjectItemType.BIN) continue;
+            var isSeq = false; try { isSeq = it.isSequence(); } catch (e) {}
+            for (var r = 0; r < rules.length; r++) {
+                var ru = rules[r]; var hit = ru.re ? new RegExp(ru.re).test(it.name) : false;
+                if (ru.seq && !isSeq) hit = false; if (ru.seq && isSeq && !ru.re) hit = true;
+                if (!hit) continue;
+                it.moveBin(binFor(ru.bin)); moved[ru.bin] = (moved[ru.bin] || 0) + 1; break;
+            }
+        }
+        return _ok({ moved: moved, restamNaRaiz: root.children.numItems });
+    } catch (e) { return _err("organizeProjectBins: " + e.message + " (linha " + e.line + ")"); }
+}
+
+
+// Lista itens (recursivo) cujo nome casa com o regex: nome, tipo, bin e caminho de mídia.
+function listarItens(re) {
+    try {
+        var rx = new RegExp(String(re || ".")), out = [];
+        var walkLista = function (bin, path) {
+            for (var i = 0; i < bin.children.numItems; i++) {
+                var it = bin.children[i];
+                if (it.type === ProjectItemType.BIN) { walkLista(it, path + "/" + it.name); continue; }
+                if (!rx.test(it.name)) continue;
+                var mp = ""; try { mp = String(it.getMediaPath()); } catch (e) { mp = "ERRO " + e.message; }
+                var hp = ""; try { hp = String(it.hasProxy()); } catch (e2) { hp = "?"; }
+                out.push({ nome: it.name, tipo: it.type, bin: path, media: mp, temProxy: hp });
+            }
+        };
+        walkLista(app.project.rootItem, "");
+        return _ok(out);
+    } catch (e) { return _err("listarItens: " + e.message + " (linha " + e.line + ")"); }
+}
+
+
+// Teste de anexação de proxy num item (pelo nome do arquivo): tenta variações e relata.
+function testeProxy(nomeArquivo, proxyPath) {
+    try {
+        var alvo = String(nomeArquivo).toLowerCase(), achado = null;
+        var walkTeste = function (bin) {
+            for (var i = 0; i < bin.children.numItems && !achado; i++) {
+                var it = bin.children[i];
+                if (it.type === ProjectItemType.BIN) { walkTeste(it); continue; }
+                var mp = ""; try { mp = decodeURI(String(it.getMediaPath())).replace(/^.*[\/\\]/, "").toLowerCase(); } catch (e) {}
+                if (mp === alvo) achado = it;
+            }
+        };
+        walkTeste(app.project.rootItem);
+        if (!achado) return _err("item não achado");
+        var r = { canProxy: (achado.canProxy ? String(achado.canProxy()) : "n/a") };
+        var f = new File(proxyPath);
+        try { r.a = String(achado.attachProxy(f.fsName, 0)); r.hasA = String(achado.hasProxy()); } catch (e1) { r.a = "erro " + e1.message; }
+        if (r.hasA !== "true") { try { r.b = String(achado.attachProxy(f.fsName, false)); r.hasB = String(achado.hasProxy()); } catch (e2) { r.b = "erro " + e2.message; } }
+        if (r.hasA !== "true" && r.hasB !== "true") { try { r.c = String(achado.attachProxy(String(proxyPath), 0)); r.hasC = String(achado.hasProxy()); } catch (e3) { r.c = "erro " + e3.message; } }
+        return _ok(r);
+    } catch (e) { return _err("testeProxy: " + e.message + " (linha " + e.line + ")"); }
+}
+
+// Pasta host/ registrada no carregamento (esta linha roda dentro da última parte).
+var __mcpHostDir = (new File($.fileName)).parent.parent.fsName;
